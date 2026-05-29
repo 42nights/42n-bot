@@ -43,6 +43,10 @@ export function renderPrBody(args: {
     ? edgeCases.map((e) => `- ${e}`).join("\n")
     : "_None flagged._";
 
+  // C6: collapse the full plan into a <details> so reviewers can audit
+  // what the bot intended without scrolling past it.
+  const planJson = JSON.stringify(args.plan, null, 2);
+
   return `${head}## What changed
 ${args.plan.user_visible_change}
 
@@ -57,6 +61,14 @@ ${args.issue.title}
 - **Files changed:** ${editedFiles}
 - **Tests added/updated:** ${editedTests}
 - **Complexity:** ${args.plan.complexity}
+
+<details><summary>📋 Full plan JSON</summary>
+
+\`\`\`json
+${planJson}
+\`\`\`
+
+</details>
 
 ## Verification report
 
