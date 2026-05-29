@@ -1,0 +1,26 @@
+node_modules
+.next
+out
+build
+dist
+
+.env
+.env.local
+.env*.local
+!.env.local.example
+
+.DS_Store
+*.log
+.vercel
+.turbo
+
+# Local SQLite + worktrees + cached subprocess transcripts
+data/
+.42n-bot-worktrees/
+
+# Real bot.config may include secrets; ship bot.config.example.ts.
+bot.config.local.ts
+
+# tsc / next incremental build state — never tracked
+*.tsbuildinfo
+tsconfig.tsbuildinfo
