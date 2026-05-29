@@ -4,19 +4,23 @@ import type { ToolchainHints } from "./detect";
 
 /**
  * Mutation-light: prove the new tests are doing something by running them
- * against the PRE-change baseline (where they should fail because the new
- * behavior isn't there yet) and the POST-change tree (where they should pass).
+ * against the PRE-change baseline (should fail — the new behavior isn't there
+ * yet) and the POST-change tree (should pass).
  *
  * Strategy:
- *  1. `git stash --keep-index --include-untracked` to set aside the impl.
+ *  1. `git stash push --include-untracked` to set aside the impl.
  *  2. Restore only the new test files from the stash.
- *  3. Run the test suite — they SHOULD fail.
+ *  3. Run the tests — they SHOULD fail.
  *  4. `git stash pop` to restore everything.
  *  5. Run again — they SHOULD pass.
  *
- * For correctness across language stacks we run the whole test command both
- * times rather than trying to scope to just the new tests. Slower but
- * universally correct.
+ * B3: When the toolchain supports targeted file runs (vitest/jest/pytest/go),
+ * we pass just the new test files instead of the whole suite. Halves runtime
+ * on most repos. Falls back to whole-suite for runners that don't.
+ *
+ * A6: If `git stash pop` fails, returns `pass:false` with `broken:true` on
+ * detail. The implementer treats `broken` as an immediate run-failure (no
+ * point iterating in a corrupted worktree).
  */
 export async function checkMutationLight(
   cwd: string,
@@ -41,7 +45,9 @@ export async function checkMutationLight(
     };
   }
 
-  // Stash everything, but keep the worktree clean — including untracked.
+  // B3: prefer targeted runs when the runner supports it.
+  const cmd = hints.testFilesArgv ? hints.testFilesArgv(testFiles) : hints.test;
+
   const stash = await runCmd(
     ["git", "stash", "push", "--include-untracked", "-m", "42n-bot-mutation"],
     cwd,
@@ -56,14 +62,11 @@ export async function checkMutationLight(
     };
   }
 
-  // Restore ONLY the new test files from the stash.
   for (const t of testFiles) {
     await runCmd(["git", "checkout", "stash@{0}", "--", t], cwd);
   }
-  // Pre: tests against baseline impl should fail.
-  const pre = await runCmd(hints.test, cwd, 600_000);
+  const pre = await runCmd(cmd, cwd, 600_000);
 
-  // Restore the rest.
   const pop = await runCmd(["git", "stash", "pop"], cwd);
   if (pop.exitCode !== 0) {
     return {
@@ -72,14 +75,13 @@ export async function checkMutationLight(
       hardGate: true,
       message:
         "Stash pop failed — worktree may be in an inconsistent state. Aborting.",
-      detail: { popStderr: pop.stderr },
+      // A6: signal the implementer that the tree is unrecoverable.
+      detail: { popStderr: pop.stderr, broken: true },
     };
   }
 
-  // Post: tests against the impl should pass.
-  const post = await runCmd(hints.test, cwd, 600_000);
+  const post = await runCmd(cmd, cwd, 600_000);
 
-  // Pre must fail (exit != 0); post must pass (exit 0).
   const preFailed = pre.exitCode !== 0;
   const postPassed = post.exitCode === 0;
   const pass = preFailed && postPassed;
@@ -95,6 +97,7 @@ export async function checkMutationLight(
     detail: {
       pre: { exit: pre.exitCode, tail: pre.stdout.slice(-1500) },
       post: { exit: post.exitCode, tail: post.stdout.slice(-1500) },
+      targeted: Boolean(hints.testFilesArgv),
     },
   };
 }
