@@ -34,9 +34,6 @@ export async function runVerification(
   const diffText = await getDiffText(args.cwd, args.baseRef);
   const changedFiles = await getChangedFiles(args.cwd, args.baseRef);
 
-  // Run hard gates in series so we short-circuit when something obvious fails.
-  // (Tests can be slow; if typecheck fails there's no point spending 10 min
-  // on a test run that's about to compile-error anyway.)
   const checks: Record<CheckName, CheckResult> = {} as Record<CheckName, CheckResult>;
 
   async function run(name: CheckName, fn: () => Promise<CheckResult>) {
@@ -51,23 +48,28 @@ export async function runVerification(
     return r;
   }
 
+  // Hard gates first, in series. Typecheck → tests → plan-tests → mutation.
+  // If typecheck fails there's no point spending 10 min on a test run.
   const tcheck = await run("typecheck", () => checkTypecheck(args.cwd, hints));
-  const testsCheck = tcheck.pass
-    ? await run("existing_tests", () => checkExistingTests(args.cwd, hints))
-    : (checks["existing_tests"] = {
-        name: "existing_tests",
-        pass: false,
-        hardGate: true,
-        message: "Skipped — typecheck failed.",
-      });
-  void testsCheck;
+  if (tcheck.pass) {
+    await run("existing_tests", () => checkExistingTests(args.cwd, hints));
+  } else {
+    checks["existing_tests"] = {
+      name: "existing_tests",
+      pass: false,
+      hardGate: true,
+      message: "Skipped — typecheck failed.",
+    };
+  }
 
   const planTestsCheck = await run("plan_tests_added", () =>
     Promise.resolve(checkPlanTestsAdded(changedFiles, args.plan)),
   );
 
   if (planTestsCheck.pass && checks.existing_tests.pass) {
-    await run("mutation_light", () => checkMutationLight(args.cwd, args.plan, hints));
+    await run("mutation_light", () =>
+      checkMutationLight(args.cwd, args.plan, hints),
+    );
   } else {
     checks.mutation_light = {
       name: "mutation_light",
@@ -77,29 +79,56 @@ export async function runVerification(
     };
   }
 
-  await run("lint", () => checkLint(args.cwd, hints));
-  checks.diff_size = checkDiffSize(diffText, args.plan);
-  emitEvent(args.runId, "verification.check_completed", {
-    check: "diff_size",
-    pass: checks.diff_size.pass,
-    message: checks.diff_size.message,
-  });
-  checks.banned_patterns = checkBannedPatterns(diffText);
-  emitEvent(args.runId, "verification.check_completed", {
-    check: "banned_patterns",
-    pass: checks.banned_patterns.pass,
-    message: checks.banned_patterns.message,
-  });
+  // D2: lint + diff_size + banned_patterns are independent and cheap. Run in
+  // parallel rather than serializing.
+  const [lintCheck, diffSizeCheck, bannedCheck] = await Promise.all([
+    Promise.resolve().then(async () => {
+      emitEvent(args.runId, "verification.check_started", { check: "lint" });
+      const r = await checkLint(args.cwd, hints);
+      emitEvent(args.runId, "verification.check_completed", {
+        check: "lint",
+        pass: r.pass,
+        message: r.message,
+      });
+      return r;
+    }),
+    Promise.resolve().then(() => {
+      const r = checkDiffSize(diffText, args.plan);
+      emitEvent(args.runId, "verification.check_completed", {
+        check: "diff_size",
+        pass: r.pass,
+        message: r.message,
+      });
+      return r;
+    }),
+    Promise.resolve().then(() => {
+      const r = checkBannedPatterns(diffText);
+      emitEvent(args.runId, "verification.check_completed", {
+        check: "banned_patterns",
+        pass: r.pass,
+        message: r.message,
+      });
+      return r;
+    }),
+  ]);
+  checks.lint = lintCheck;
+  checks.diff_size = diffSizeCheck;
+  checks.banned_patterns = bannedCheck;
 
-  // Critic gets the new test output for context.
+  // C8: feed the critic the POST-CHANGE test output (mutation-light's `post`)
+  // rather than just the existing-tests stdout. That includes the new tests'
+  // actual output, which is what the critic needs to judge test depth.
+  const mutationDetail = checks.mutation_light.detail as
+    | { post?: { tail?: string }; pre?: { tail?: string } }
+    | undefined;
+  const existingDetail = checks.existing_tests.detail as
+    | { stdoutTail?: string }
+    | undefined;
   const newTestOutput =
-    typeof checks.existing_tests.detail === "object" &&
-    checks.existing_tests.detail !== null &&
-    "stdoutTail" in checks.existing_tests.detail
-      ? String(
-          (checks.existing_tests.detail as { stdoutTail: string }).stdoutTail,
-        )
-      : checks.existing_tests.message;
+    mutationDetail?.post?.tail ??
+    existingDetail?.stdoutTail ??
+    checks.existing_tests.message;
+
   await run("critic", () =>
     checkCritic({
       issue: args.issue,
@@ -132,7 +161,6 @@ export async function runVerification(
     softFailures: softFailures.length,
   });
 
-  // Persist verdict.
   db.prepare(
     `INSERT INTO verdicts (run_id, attempt, pass, checks_json, failure_summary, created_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
