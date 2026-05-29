@@ -1,0 +1,7 @@
+{
+  "owner": "42nights",
+  "repo": "dataroom",
+  "issueNumber": 999,
+  "title": "Add retry to the webhook handler on 5xx",
+  "body": "When the upstream returns 5xx the webhook handler should retry up to 3 times with exponential backoff (250ms / 500ms / 1s). Add a unit test that covers the 503→200 sequence."
+}
