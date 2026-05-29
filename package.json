@@ -13,11 +13,13 @@
     "migrate": "tsx scripts/migrate.ts",
     "seed:demo": "node --env-file=.env.local --import tsx scripts/seed-demo.ts",
     "bot": "node --env-file=.env.local --import tsx src/coordinator/index.ts",
+    "smoke": "node --env-file=.env.local --import tsx scripts/smoke-test.ts",
     "trigger:implementer": "node --env-file=.env.local --import tsx scripts/trigger-implementer.ts",
     "trigger:reviewer": "node --env-file=.env.local --import tsx scripts/trigger-reviewer.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.99.0",
+    "@octokit/plugin-retry": "^8.1.0",
     "@octokit/rest": "^21.0.2",
     "@radix-ui/react-dialog": "^1.1.2",
     "@radix-ui/react-dropdown-menu": "^2.1.2",
