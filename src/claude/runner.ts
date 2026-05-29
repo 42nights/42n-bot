@@ -6,6 +6,7 @@ import os from "node:os";
 import { botConfig } from "../../bot.config";
 import { emitEvent } from "../shared/events";
 import { log } from "../shared/logger";
+import { consumeStreamLine, emptySink, evaluateHang } from "./stream";
 
 export type ClaudeRunMode = "plan" | "implement" | "critic" | "review";
 
@@ -90,20 +91,15 @@ export async function runClaudeCode(opts: ClaudeRunOptions): Promise<ClaudeRunRe
     args.push("--append-system-prompt-file", opts.systemPromptAppendFile);
   if (opts.resumeSessionId) args.push("--resume", opts.resumeSessionId);
 
-  let sessionId: string | undefined;
-  let totalCostUsd = 0;
-  let lastTextResult: string | undefined;
-  let structuredOutput: unknown;
+  // A7: parse stream-json via the shared, testable helper. The sink owns all
+  // mutable parse state; runner.ts only enforces lifecycle + budget + hang.
+  const sink = emptySink(startedAt);
   let killReason:
     | null
     | "budget_exceeded"
     | "hang_no_tool_use"
     | "hang_no_event"
     | "api_retry_storm" = null;
-  let lastToolUseAt = Date.now();
-  let lastAnyEventAt = Date.now();
-  let lastTextDeltaAt = 0;
-  let apiRetryAttempts = 0;
 
   let child: ResultPromise<{
     cwd: string;
@@ -145,84 +141,49 @@ export async function runClaudeCode(opts: ClaudeRunOptions): Promise<ClaudeRunRe
   const stdoutFh = await fs.open(stdoutPath, "w");
   const stderrFh = await fs.open(stderrPath, "w");
 
-  // Heuristic hang-killer: every 10s, check the timing invariants.
+  // Hang-killer: 10s tick checks budget + the three heuristics from
+  // stream.ts/evaluateHang. Pure function, easy to test.
   const hangTimer = setInterval(() => {
-    const now = Date.now();
     if (
       opts.costBudgetUsd != null &&
-      totalCostUsd > opts.costBudgetUsd &&
+      sink.totalCostUsd > opts.costBudgetUsd &&
       killReason == null
     ) {
       killReason = "budget_exceeded";
       emitEvent(opts.runId, "claude.budget_exceeded", {
-        costUsd: totalCostUsd,
+        costUsd: sink.totalCostUsd,
         budgetUsd: opts.costBudgetUsd,
       });
       child.kill("SIGKILL");
       return;
     }
-    if (
-      now - lastAnyEventAt > 60_000 &&
-      now - startedAt > 60_000 &&
-      killReason == null
-    ) {
-      killReason = "hang_no_event";
-      child.kill("SIGKILL");
-      return;
-    }
-    if (
-      lastTextDeltaAt > lastToolUseAt &&
-      now - lastToolUseAt > 90_000 &&
-      killReason == null
-    ) {
-      killReason = "hang_no_tool_use";
-      child.kill("SIGKILL");
-      return;
-    }
-    if (apiRetryAttempts >= 5 && killReason == null) {
-      killReason = "api_retry_storm";
+    const hang = evaluateHang(sink, startedAt);
+    if (!hang.ok && killReason == null) {
+      killReason = hang.kind;
       child.kill("SIGKILL");
     }
   }, 10_000);
 
   let buf = "";
+  let lastToolEmitted = 0;
   child.stdout?.on("data", async (chunk: Buffer | string) => {
     const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
     await stdoutFh.write(text);
     buf += text;
-    lastAnyEventAt = Date.now();
     let nl: number;
     while ((nl = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, nl).trim();
+      const line = buf.slice(0, nl);
       buf = buf.slice(nl + 1);
-      if (!line) continue;
-      try {
-        const evt = JSON.parse(line);
-        if (evt.type === "system" && evt.subtype === "init" && evt.session_id) {
-          sessionId = evt.session_id;
-        }
-        if (evt.type === "system" && evt.subtype === "api_retry") {
-          apiRetryAttempts = Math.max(apiRetryAttempts, Number(evt.attempt ?? 0));
-        }
-        if (evt.type === "tool_use" || evt.subtype === "tool_use") {
-          lastToolUseAt = Date.now();
-          emitEvent(opts.runId, "implement.tool_use", {
-            mode: opts.mode,
-            tool: evt.tool_name ?? evt.name ?? "unknown",
-          });
-        }
-        if (evt.type === "text_delta" || evt.subtype === "text_delta") {
-          lastTextDeltaAt = Date.now();
-        }
-        if (evt.type === "result") {
-          if (typeof evt.total_cost_usd === "number")
-            totalCostUsd = evt.total_cost_usd;
-          if (typeof evt.result === "string") lastTextResult = evt.result;
-          if (evt.structured_output !== undefined)
-            structuredOutput = evt.structured_output;
-        }
-      } catch {
-        /* malformed line — non-JSON debug output, ignore */
+      consumeStreamLine(line, sink);
+      // Emit a dashboard-visible event whenever we observe a new tool_use —
+      // but throttle by comparing against the last emission timestamp so a
+      // burst of content_block_starts doesn't flood the events table.
+      if (sink.lastToolUseAt > lastToolEmitted) {
+        lastToolEmitted = sink.lastToolUseAt;
+        emitEvent(opts.runId, "implement.tool_use", {
+          mode: opts.mode,
+          tool: sink.lastToolName ?? "unknown",
+        });
       }
     }
   });
@@ -242,15 +203,15 @@ export async function runClaudeCode(opts: ClaudeRunOptions): Promise<ClaudeRunRe
       mode: opts.mode,
       ok: true,
       durationMs,
-      costUsd: totalCostUsd,
+      costUsd: sink.totalCostUsd,
     });
     return {
       ok: true,
       mode: opts.mode,
-      sessionId: sessionId ?? "",
-      result: lastTextResult,
-      structuredOutput,
-      costUsd: totalCostUsd,
+      sessionId: sink.sessionId ?? "",
+      result: sink.lastTextResult,
+      structuredOutput: sink.structuredOutput,
+      costUsd: sink.totalCostUsd,
       durationMs,
       stdoutPath,
       stderrPath,
@@ -280,19 +241,22 @@ export async function runClaudeCode(opts: ClaudeRunOptions): Promise<ClaudeRunRe
       ok: false,
       durationMs,
       errorKind,
-      costUsd: totalCostUsd,
+      costUsd: sink.totalCostUsd,
     });
 
-    log.warn("claude", `subprocess exit kind=${errorKind} cost=$${totalCostUsd.toFixed(4)}`);
+    log.warn(
+      "claude",
+      `subprocess exit kind=${errorKind} cost=$${sink.totalCostUsd.toFixed(4)}`,
+    );
 
     return {
       ok: false,
       mode: opts.mode,
-      sessionId,
+      sessionId: sink.sessionId,
       errorKind,
       errorMessage,
-      partialResult: lastTextResult,
-      partialCostUsd: totalCostUsd,
+      partialResult: sink.lastTextResult,
+      partialCostUsd: sink.totalCostUsd,
       durationMs,
       stdoutPath,
       stderrPath,
@@ -339,36 +303,78 @@ export async function runStructuredPlan<T>(opts: {
     structured: true,
   });
 
-  try {
-    const { stdout } = await execa(botConfig.claudeCode.bin, args, {
-      cwd: opts.cwd,
-      timeout: opts.timeoutMs ?? botConfig.claudeCode.plannerTimeoutMs,
-      maxBuffer: 10 * 1024 * 1024,
-      env: {
-        ...process.env,
-        ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "",
-      },
-    });
-    const parsed = ClaudeJsonResultSchema.parse(JSON.parse(stdout));
-    const candidate = parsed.structured_output ?? parsed.result;
-    const planResult = opts.schema.safeParse(candidate);
-    if (!planResult.success) {
+  /** Single planner invocation. Captured here so we can retry it cheaply. */
+  async function attempt(): Promise<
+    | { ok: true; plan: T; costUsd: number; sessionId: string }
+    | {
+        ok: false;
+        error: string;
+        partialCostUsd?: number;
+        violation?: boolean;
+      }
+  > {
+    try {
+      const { stdout } = await execa(botConfig.claudeCode.bin, args, {
+        cwd: opts.cwd,
+        timeout: opts.timeoutMs ?? botConfig.claudeCode.plannerTimeoutMs,
+        maxBuffer: 10 * 1024 * 1024,
+        env: {
+          ...process.env,
+          ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "",
+        },
+      });
+      const parsed = ClaudeJsonResultSchema.parse(JSON.parse(stdout));
+      const candidate = parsed.structured_output ?? parsed.result;
+      const planResult = opts.schema.safeParse(candidate);
+      if (!planResult.success) {
+        return {
+          ok: false,
+          violation: true,
+          error: `schema violation: ${planResult.error.message}`,
+          partialCostUsd: parsed.total_cost_usd ?? 0,
+        };
+      }
+      return {
+        ok: true,
+        plan: planResult.data,
+        costUsd: parsed.total_cost_usd ?? 0,
+        sessionId: parsed.session_id ?? "",
+      };
+    } catch (err) {
       return {
         ok: false,
-        error: `schema violation: ${planResult.error.message}`,
-        partialCostUsd: parsed.total_cost_usd ?? 0,
+        error: err instanceof Error ? err.message : String(err),
       };
     }
-    return {
-      ok: true,
-      plan: planResult.data,
-      costUsd: parsed.total_cost_usd ?? 0,
-      sessionId: parsed.session_id ?? "",
-    };
-  } catch (err) {
+  }
+
+  // B8: schema violations are usually transient — Claude's JSON-schema mode
+  // occasionally glitches and returns text where structured_output should
+  // have been. One cheap retry usually recovers.
+  const first = await attempt();
+  if (first.ok) return first;
+  if (!first.violation)
     return {
       ok: false,
-      error: err instanceof Error ? err.message : String(err),
+      error: first.error,
+      partialCostUsd: first.partialCostUsd,
+    };
+
+  log.warn(
+    "claude",
+    `planner schema violation on first attempt; retrying once`,
+  );
+  const second = await attempt();
+  if (second.ok) {
+    return {
+      ...second,
+      costUsd: second.costUsd + (first.partialCostUsd ?? 0),
     };
   }
+  return {
+    ok: false,
+    error: `retry after schema violation: ${second.error}`,
+    partialCostUsd:
+      (first.partialCostUsd ?? 0) + (second.partialCostUsd ?? 0),
+  };
 }
