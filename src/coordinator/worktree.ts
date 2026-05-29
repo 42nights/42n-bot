@@ -90,10 +90,12 @@ export async function reapOrphans(repoDir: string) {
 }
 
 export async function recoverCrashedRuns(repoDir: string) {
+  // B9: include 'queued' so runs that died between createRunRow and the
+  // first state transition don't get stuck forever.
   const active = db
     .prepare(
       `SELECT id, worktree_path, repo, issue_number FROM runs
-         WHERE status IN ('planning','implementing','verifying','iterating')`,
+         WHERE status IN ('queued','planning','implementing','verifying','iterating')`,
     )
     .all() as Array<{
     id: number;
