@@ -94,3 +94,23 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages(thread_id, created_at);
+
+-- Cross-process dispatch signal. The webhook writes here; the coordinator
+-- polls on a 2s tick and drains. Single row keyed by `name`.
+CREATE TABLE IF NOT EXISTS dispatch_signals (
+  name TEXT PRIMARY KEY,
+  dirty INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
+
+-- Reviewer dedupe cache: persisted embeddings for open issues so we don't
+-- re-embed the world every 6h. Invalidated when GitHub reports a newer
+-- updated_at than the cached one.
+CREATE TABLE IF NOT EXISTS issue_embeddings (
+  repo TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
+  updated_at TEXT NOT NULL,                    -- GitHub's ISO updated_at
+  embedding BLOB NOT NULL,
+  cached_at INTEGER NOT NULL,
+  PRIMARY KEY (repo, issue_number)
+);
