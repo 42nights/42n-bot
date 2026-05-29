@@ -3,9 +3,24 @@ import { ensureSchema } from "@/src/db/migrate";
 import { verifyGitHubSignature, type GitHubEvent } from "@/src/github/webhook";
 import { log } from "@/src/shared/logger";
 import { db } from "@/src/db";
+import { requestDispatch } from "@/src/coordinator/dispatch";
 
 export const runtime = "nodejs";
 
+/**
+ * Handles GitHub webhooks. Verifies HMAC on the raw body, persists every
+ * delivery as an event row (for audit + replay), then routes:
+ *
+ *  - issues.opened / issues.labeled with our request label
+ *      → flip the implementer dispatch signal so the coordinator polls
+ *        within 2s instead of waiting up to 60s for the next interval tick.
+ *  - pull_request.closed with merged:true
+ *      → look up the run by pr_number, mark succeeded, schedule worktree
+ *        cleanup. (Spec §18.4 — A9 in the review.)
+ *  - everything else → log + 200.
+ *
+ * Fast-acks. Heavy work happens in the coordinator process.
+ */
 export async function POST(req: NextRequest) {
   ensureSchema();
   const raw = await req.text();
@@ -44,6 +59,42 @@ export async function POST(req: NextRequest) {
     JSON.stringify({ deliveryId, payload }),
   );
 
-  // Fast-ack — coordinator daemon picks up the work via polling.
+  // A3/B5: ask the coordinator to poll NOW rather than waiting up to 60s.
+  if (
+    eventName === "issues" &&
+    (payload.action === "labeled" || payload.action === "opened")
+  ) {
+    requestDispatch("implementer");
+    log.info("webhook", `→ implementer dispatch (action=${payload.action})`);
+  }
+
+  // A9: a PR merge closes the loop. Mark the run, leave worktree cleanup to
+  // the coordinator's reap cron so we don't block the webhook.
+  if (
+    eventName === "pull_request" &&
+    payload.action === "closed" &&
+    payload.pull_request?.merged === true
+  ) {
+    const prNumber = payload.pull_request.number;
+    const row = db
+      .prepare(
+        `SELECT id, worktree_path FROM runs
+           WHERE pr_number = ? AND status IN ('pr-opened','needs-review')
+           ORDER BY started_at DESC LIMIT 1`,
+      )
+      .get(prNumber) as { id: number; worktree_path: string | null } | undefined;
+    if (row) {
+      db.prepare(
+        `UPDATE runs SET status='succeeded', finished_at=? WHERE id=?`,
+      ).run(Date.now(), row.id);
+      db.prepare(
+        `INSERT INTO events (run_id, ts, kind, payload_json) VALUES (?, ?, 'pr.merged', ?)`,
+      ).run(row.id, Date.now(), JSON.stringify({ prNumber }));
+      log.info("webhook", `PR #${prNumber} merged → run #${row.id} succeeded`);
+    } else {
+      log.info("webhook", `PR #${prNumber} merged but no matching run row`);
+    }
+  }
+
   return new Response("ok", { status: 200 });
 }
