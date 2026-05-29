@@ -88,6 +88,7 @@ export async function runReviewer(input: ReviewerInput): Promise<{
   );
   emitEvent(runId, "review.proposed", { count: candidates.length });
 
+  const repoFull = `${input.owner}/${input.repo}`;
   let opened = 0;
   let deduped = 0;
   for (const c of candidates) {
@@ -95,11 +96,13 @@ export async function runReviewer(input: ReviewerInput): Promise<{
     let dupOutcome: Awaited<ReturnType<typeof isDuplicate>>;
     try {
       dupOutcome = await isDuplicate({
+        repo: repoFull,
         candidate: { title: c.title, body },
         existing: existing.map((e) => ({
           number: e.number,
           title: e.title,
           body: e.body,
+          updated_at: e.updated_at,
         })),
         threshold: botConfig.reviewer.duplicateThreshold,
       });
