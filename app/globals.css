@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 0 0% 100%;
+  --foreground: 240 10% 4%;
+  --muted: 240 5% 96%;
+  --muted-foreground: 240 4% 38%;
+  --border: 240 6% 90%;
+  --primary: 252 80% 56%;
+  --primary-foreground: 0 0% 100%;
+  --destructive: 0 84% 50%;
+  --destructive-foreground: 0 0% 100%;
+  --success: 158 64% 38%;
+  --success-foreground: 0 0% 100%;
+  --warning: 36 92% 50%;
+  --warning-foreground: 0 0% 100%;
+  --radius: 10px;
+}
+
+html,
+body {
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-feature-settings: "ss01", "cv11";
+}
+
+* {
+  border-color: hsl(var(--border));
+}
+
+::selection {
+  background: hsl(var(--primary) / 0.18);
+}
+
+/* Diff syntax */
+.diff-add {
+  background-color: rgba(46, 160, 67, 0.12);
+  color: #1a7f37;
+}
+.diff-del {
+  background-color: rgba(248, 81, 73, 0.12);
+  color: #cf222e;
+}
+.diff-hunk {
+  color: #6e7781;
+  background-color: #f6f8fa;
+  border-top: 1px solid hsl(var(--border));
+  border-bottom: 1px solid hsl(var(--border));
+}
