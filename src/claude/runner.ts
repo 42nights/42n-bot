@@ -291,6 +291,8 @@ export async function runStructuredPlan<T>(opts: {
   timeoutMs?: number;
   costBudgetUsd?: number;
   appendSystemPromptFile?: string;
+  allowedTools?: string[];
+  permissionMode?: "acceptEdits" | "dontAsk";
 }): Promise<
   | { ok: true; plan: T; costUsd: number; sessionId: string }
   | { ok: false; error: string; partialCostUsd?: number }
@@ -303,9 +305,9 @@ export async function runStructuredPlan<T>(opts: {
     "--json-schema",
     JSON.stringify(opts.jsonSchema),
     "--allowedTools",
-    "Read",
+    (opts.allowedTools ?? ["Read"]).join(","),
     "--permission-mode",
-    "dontAsk",
+    opts.permissionMode ?? "dontAsk",
   ];
   if (opts.appendSystemPromptFile)
     args.push("--append-system-prompt-file", opts.appendSystemPromptFile);

@@ -6,7 +6,10 @@ export type CheckName =
   | "lint"
   | "diff_size"
   | "banned_patterns"
-  | "critic";
+  | "critic"
+  | "acceptance_tests"
+  | "critic_v2"
+  | "runtime_verification";
 
 export type CheckResult = {
   name: CheckName;
@@ -31,4 +34,7 @@ export type Plan = {
   complexity: "trivial" | "small" | "medium" | "large";
   should_abort: boolean;
   abort_reason: string | null;
+  /** v2 overhaul: tests that MUST pass for the acceptance criteria.
+   *  Optional for back-compat with pre-v2 plans. */
+  acceptance_test_paths?: string[];
 };

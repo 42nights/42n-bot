@@ -4,18 +4,27 @@ import { botConfig } from "../../bot.config";
 import { runClaudeCode, runStructuredPlan } from "../claude/runner";
 import {
   PLAN_JSON_SCHEMA,
-  implementPrompt,
+  implementPromptV2,
   iterationPrompt,
-  planPrompt,
+  planPromptV2,
   PROMPT_VERSION,
   type IssueForPrompt,
+  type UnderstandingForPrompt,
 } from "../claude/prompts";
 import { z } from "zod";
-import { getRepoSummary } from "./repo-summary";
 import { assertNotProtected, createWorktree, removeWorktree } from "./worktree";
 import { runVerification } from "../verification";
 import type { Plan, Verdict } from "../verification/types";
 import { renderPrBody } from "./pr-body";
+import { runUnderstand } from "../claude/phases/understand";
+import { runReproduce } from "../claude/phases/reproduce";
+import { runDesign } from "../claude/phases/design";
+import { runReplan } from "../claude/phases/replan";
+import { parseImplementerRequests } from "../claude/parse-requests";
+import type {
+  Understanding,
+  CriticV2Report,
+} from "../claude/phases/types";
 import {
   addLabel,
   commentOnIssue,
@@ -42,7 +51,21 @@ const PlanSchema = z.object({
   complexity: z.enum(["trivial", "small", "medium", "large"]),
   should_abort: z.boolean(),
   abort_reason: z.string().nullable(),
+  // v2 overhaul: optional in the wire-level schema for back-compat. Tests
+  // that MUST pass for the acceptance criteria to be met. Includes any
+  // reproduction test from phase 1a + any integration tests from design.
+  acceptance_test_paths: z.array(z.string()).optional(),
 }) satisfies z.ZodType<Plan>;
+
+function asUnderstandingForPrompt(u: Understanding): UnderstandingForPrompt {
+  return {
+    issue_type: u.issue_type,
+    issue_summary: u.issue_summary,
+    acceptance_criteria: u.acceptance_criteria,
+    user_visible_outcome: u.user_visible_outcome,
+    relevant_files: u.relevant_files,
+  };
+}
 
 export type ImplementerInput = {
   repoDir: string;
@@ -225,16 +248,175 @@ export async function runImplementer(input: ImplementerInput): Promise<{
     assertNotProtected(branch);
     updateRun(runId, { branch_name: branch, worktree_path: worktreePath });
 
-    // 2. Plan
+    // ── v2 §3 — UNDERSTAND phase. Forced to read the codebase before any
+    //   planning. If the bot can't ground its understanding in actual code
+    //   (or if the issue is unclear), it aborts cleanly with a comment.
+    const undResult = await runUnderstand({
+      runId,
+      issue: input.issue,
+      cwd: worktreePath,
+      costBudgetUsd: botConfig.budgets.perRunUsd,
+    });
+    if (!undResult.ok) {
+      if (undResult.partialCostUsd) incCost(runId, undResult.partialCostUsd);
+      updateRun(runId, {
+        status: "failed",
+        finished_at: Date.now(),
+        error_message: `understand failed: ${undResult.error}`,
+      });
+      await cleanupLabels({
+        owner: input.owner,
+        repo: input.repo,
+        issue_number: input.issue.number,
+        alsoRemovePlease: false,
+      });
+      if (worktreePath)
+        await removeWorktree({
+          repoDir: input.repoDir,
+          worktreePath,
+          force: true,
+        });
+      return { runId, outcome: "failed" };
+    }
+    incCost(runId, undResult.costUsd);
+    const understanding = undResult.understanding;
+    updateRun(runId, {
+      issue_type: understanding.issue_type,
+      understanding_json: JSON.stringify(understanding),
+    });
+    saveArtifact(runId, "understanding", JSON.stringify(understanding, null, 2));
+
+    if (
+      !understanding.proceed ||
+      understanding.confidence_to_proceed <
+        botConfig.understanding.minConfidenceToProceed
+    ) {
+      const reason =
+        understanding.abort_reason ??
+        `Confidence ${understanding.confidence_to_proceed} below threshold ${botConfig.understanding.minConfidenceToProceed}.`;
+      const unknownsBlock = understanding.unknowns.length
+        ? `\n\n**Unknowns:**\n${understanding.unknowns.map((u) => `- ${u}`).join("\n")}`
+        : "";
+      await commentOnIssue({
+        owner: input.owner,
+        repo: input.repo,
+        issue_number: input.issue.number,
+        body: `🤖 Otis examined this issue and chose not to attempt an implementation.\n\n**Reason:** ${reason}${unknownsBlock}`,
+      }).catch(() => {});
+      await cleanupLabels({
+        owner: input.owner,
+        repo: input.repo,
+        issue_number: input.issue.number,
+        alsoRemovePlease: false,
+      });
+      updateRun(runId, {
+        status: "abandoned",
+        finished_at: Date.now(),
+        error_message: `understand abort: ${reason}`,
+      });
+      emitEvent(runId, "run.finished", { outcome: "abandoned" });
+      await removeWorktree({
+        repoDir: input.repoDir,
+        worktreePath,
+        force: true,
+      });
+      return { runId, outcome: "abandoned" };
+    }
+
+    // ── v2 §4 — REPRODUCE (bug) or §5 — DESIGN (feature) ─────────────────
+    let reproTestPath: string | null = null;
+    let designJson: string | null = null;
+    if (understanding.issue_type === "bug") {
+      const repro = await runReproduce({
+        runId,
+        issue: input.issue,
+        understanding,
+        cwd: worktreePath,
+        costBudgetUsd: botConfig.budgets.perRunUsd,
+      });
+      if (!repro.ok) {
+        if (repro.partialCostUsd) incCost(runId, repro.partialCostUsd);
+        // Don't fail catastrophically — fall through to plan without a repro
+        // test. Verification will catch shallowness, and critic v2 will see
+        // there's no acceptance test.
+        log.warn("implementer", `reproduce failed: ${repro.error}`);
+      } else {
+        incCost(runId, repro.costUsd);
+        saveArtifact(runId, "reproduce", JSON.stringify(repro.reproduce, null, 2));
+        if (repro.reproduce.reproduced) {
+          reproTestPath = repro.reproduce.test_file_path;
+        } else {
+          // Honest abort — comment on the issue, drop the claim label.
+          const why =
+            repro.reproduce.cannot_reproduce_reason ?? "no reason given";
+          await commentOnIssue({
+            owner: input.owner,
+            repo: input.repo,
+            issue_number: input.issue.number,
+            body: `🤖 Otis attempted to reproduce this but couldn't.\n\n**Reason:** ${why}\n\nTo proceed, I need one of:\n- Exact repro steps (command, input, expected output, actual output)\n- The version / commit hash where you observed this\n- Confirmation that this is still happening on \`main\``,
+          }).catch(() => {});
+          await Promise.allSettled([
+            addLabel({
+              owner: input.owner,
+              repo: input.repo,
+              issue_number: input.issue.number,
+              label: botConfig.labels.cantReproduce,
+            }),
+          ]);
+          await cleanupLabels({
+            owner: input.owner,
+            repo: input.repo,
+            issue_number: input.issue.number,
+            alsoRemovePlease: true,
+          });
+          updateRun(runId, {
+            status: "abandoned",
+            finished_at: Date.now(),
+            error_message: `cannot reproduce: ${why}`,
+          });
+          emitEvent(runId, "run.finished", { outcome: "abandoned" });
+          await removeWorktree({
+            repoDir: input.repoDir,
+            worktreePath,
+            force: true,
+          });
+          return { runId, outcome: "abandoned" };
+        }
+      }
+    } else if (understanding.issue_type === "feature") {
+      const design = await runDesign({
+        runId,
+        issue: input.issue,
+        understanding,
+        cwd: worktreePath,
+        costBudgetUsd: botConfig.budgets.perRunUsd,
+      });
+      if (!design.ok) {
+        if (design.partialCostUsd) incCost(runId, design.partialCostUsd);
+        log.warn("implementer", `design failed: ${design.error}`);
+      } else {
+        incCost(runId, design.costUsd);
+        designJson = JSON.stringify(design.design, null, 2);
+        saveArtifact(runId, "design", designJson);
+      }
+    }
+
+    // ── v2 §6 — PLAN, grounded in understanding + repro/design ──────────
     emitEvent(runId, "plan.started", {});
-    const repoSummary = await getRepoSummary(worktreePath);
     const planRes = await runStructuredPlan({
       runId,
-      prompt: planPrompt(input.issue, repoSummary),
+      prompt: planPromptV2({
+        issue: input.issue,
+        understanding: asUnderstandingForPrompt(understanding),
+        reproTestPath,
+        designJson,
+      }),
       cwd: worktreePath,
       schema: PlanSchema,
       jsonSchema: PLAN_JSON_SCHEMA,
       costBudgetUsd: botConfig.budgets.perRunUsd,
+      allowedTools: ["Read", "Grep", "Glob"],
+      permissionMode: "dontAsk",
     });
     if (!planRes.ok) {
       // A8: capture the partial cost even on planner failure.
@@ -301,8 +483,19 @@ export async function runImplementer(input: ImplementerInput): Promise<{
     updateRun(runId, { status: "implementing" });
     emitEvent(runId, "run.status", { status: "implementing" });
     let lastSessionId: string | undefined;
-    let lastVerdict: Verdict | null = null;
+    let lastVerdict: Awaited<ReturnType<typeof runVerification>> | null = null;
     let attempt = 0;
+    let replanCount = 0;
+    let currentPlan = planRes.plan;
+    // v2 §6: persist the acceptance test paths the plan declared so
+    // verification can hard-gate against them.
+    const acceptancePaths: string[] = [
+      ...(reproTestPath ? [reproTestPath] : []),
+      ...((currentPlan.acceptance_test_paths ?? []) as string[]),
+    ];
+    updateRun(runId, {
+      acceptance_test_paths_json: JSON.stringify(acceptancePaths),
+    });
 
     while (attempt < botConfig.verification.maxIterations) {
       attempt += 1;
@@ -310,11 +503,16 @@ export async function runImplementer(input: ImplementerInput): Promise<{
 
       const prompt =
         attempt === 1
-          ? implementPrompt(input.issue, planRes.plan)
+          ? implementPromptV2({
+              issue: input.issue,
+              understanding: asUnderstandingForPrompt(understanding),
+              plan: currentPlan,
+              reproTestPath,
+            })
           : // B2: slim retry payload — only failing checks + 200-char tails.
             iterationPrompt(
               verdictForRetry(lastVerdict!),
-              JSON.stringify(planRes.plan, null, 2),
+              JSON.stringify(currentPlan, null, 2),
             );
 
       if (attempt > 1) {
@@ -329,14 +527,62 @@ export async function runImplementer(input: ImplementerInput): Promise<{
         mode: "implement",
         prompt,
         cwd: worktreePath,
-        // A5: scoped Bash + no git mutation tools for the model.
-        allowedTools: IMPLEMENTER_ALLOWED_TOOLS,
+        // v2 §7.2 — use the centralized scoped allowlist + runtime curl entries.
+        allowedTools: botConfig.allowedTools,
         permissionMode: "acceptEdits",
         resumeSessionId: lastSessionId,
         costBudgetUsd: botConfig.budgets.perRunUsd,
       });
       if (impl.ok) lastSessionId = impl.sessionId;
       incCost(runId, impl.ok ? impl.costUsd : (impl.partialCostUsd ?? 0));
+
+      // v2 §7.1: parse the implementer's output for plan-revision requests.
+      // If found and we haven't blown the cap, run REPLAN and loop without
+      // counting this against the maxIterations budget — we want to give the
+      // bot room to recover from a wrong plan, but not infinite loops.
+      if (impl.ok && impl.result) {
+        const requests = parseImplementerRequests(impl.result);
+        const revision = requests.find((r) => r.kind === "plan_revision");
+        if (revision && replanCount < botConfig.replan.maxPerRun) {
+          replanCount += 1;
+          updateRun(runId, { replan_count: replanCount });
+          log.info(
+            "implementer",
+            `implementer requested replan (${replanCount}/${botConfig.replan.maxPerRun}): ${revision.discovered.slice(0, 120)}`,
+          );
+          const replanRes = await runReplan({
+            runId,
+            issue: input.issue,
+            understanding,
+            originalPlan: currentPlan,
+            discovered: revision.discovered,
+            suggestedNewFiles: revision.suggestedNewFiles,
+            attempt: replanCount,
+            cwd: worktreePath,
+            costBudgetUsd: botConfig.budgets.perRunUsd,
+          });
+          if (replanRes.ok) {
+            incCost(runId, replanRes.costUsd);
+            currentPlan = replanRes.plan as Plan;
+            saveArtifact(
+              runId,
+              `replan-${replanCount}`,
+              JSON.stringify(currentPlan, null, 2),
+            );
+            // Don't advance attempt — retry with the new plan from scratch.
+            attempt -= 1;
+            continue;
+          }
+          // Replan failed — proceed with the original plan and let
+          // verification catch what it catches.
+          if (replanRes.partialCostUsd)
+            incCost(runId, replanRes.partialCostUsd);
+          log.warn(
+            "implementer",
+            `replan failed: ${replanRes.error}`,
+          );
+        }
+      }
 
       if (!impl.ok) {
         emitEvent(runId, "implement.failed", {
@@ -371,8 +617,12 @@ export async function runImplementer(input: ImplementerInput): Promise<{
         attempt,
         cwd: worktreePath,
         baseRef: `origin/${input.baseBranch}`,
-        plan: planRes.plan,
+        plan: currentPlan,
         issue: input.issue,
+        // v2: pass the v2 context so acceptance + runtime + critic_v2 run.
+        understanding,
+        acceptancePaths,
+        useCriticV2: true,
       });
 
       // A6: if mutation-light blew up the worktree, bail immediately — no
@@ -431,7 +681,8 @@ export async function runImplementer(input: ImplementerInput): Promise<{
       });
       return { runId, outcome: "failed" };
     }
-    const summary = planRes.plan.user_visible_change;
+    const summary =
+      understanding.user_visible_outcome || currentPlan.user_visible_change;
     await git.commit(
       `bot: ${input.issue.title}\n\nCloses #${input.issue.number}\n\n${summary}\n\nPrompt-version: ${PROMPT_VERSION}`,
     );
@@ -440,14 +691,35 @@ export async function runImplementer(input: ImplementerInput): Promise<{
     const costRow = db
       .prepare(`SELECT cost_usd FROM runs WHERE id = ?`)
       .get(runId) as { cost_usd: number };
+
+    const runtimeCheck = lastVerdict!.checks.runtime_verification;
+    const runtimeVerification = runtimeCheck
+      ? {
+          ok: runtimeCheck.pass,
+          summary: runtimeCheck.message,
+        }
+      : null;
+    updateRun(runId, {
+      runtime_verification_json: runtimeCheck
+        ? JSON.stringify({
+            pass: runtimeCheck.pass,
+            message: runtimeCheck.message,
+            detail: runtimeCheck.detail,
+          })
+        : null,
+    });
+
     const prBody = renderPrBody({
       issue: input.issue,
-      plan: planRes.plan,
+      plan: currentPlan,
       verdict: lastVerdict!,
       attempts: attempt,
       runId,
       costUsd: costRow.cost_usd,
       needsReview,
+      understanding,
+      criticV2: lastVerdict!.criticV2,
+      runtimeVerification,
     });
 
     const pr = await openPullRequest({

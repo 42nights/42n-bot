@@ -52,7 +52,28 @@ export function runMigrations() {
   addColumnIfMissing("repos", "description", "TEXT");
   addColumnIfMissing("repos", "installation_id", "INTEGER");
 
+  // v0.2 phases overhaul — UNDERSTAND/REPRODUCE/DESIGN/replan + acceptance
+  // criteria + runtime verification. All additive; existing rows keep working.
+  addColumnIfMissing("runs", "issue_type", "TEXT");
+  addColumnIfMissing("runs", "understanding_json", "TEXT");
+  addColumnIfMissing("runs", "acceptance_test_paths_json", "TEXT");
+  addColumnIfMissing("runs", "runtime_verification_json", "TEXT");
+  addColumnIfMissing("runs", "replan_count", "INTEGER NOT NULL DEFAULT 0");
+
   db.exec(`
+    CREATE TABLE IF NOT EXISTS phase_costs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      phase TEXT NOT NULL,
+      attempt INTEGER NOT NULL DEFAULT 1,
+      cost_usd REAL NOT NULL DEFAULT 0,
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      ok INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_phase_costs_run ON phase_costs(run_id, phase);
+
     CREATE TABLE IF NOT EXISTS app_credentials (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       app_id INTEGER NOT NULL,

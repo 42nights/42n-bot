@@ -23,7 +23,75 @@ export const botConfig = {
     claimed: "bot-claimed",
     needsReview: "bot-needs-review",
     botFound: "bot-found",
+    // v2 overhaul: bot tried and could not reproduce. Honest abort.
+    cantReproduce: "bot-cant-reproduce",
+    // v2 overhaul: design produced; awaiting `@bot proceed` confirmation.
+    confirmDesign: "bot-confirm-design",
   },
+
+  /**
+   * v2 overhaul §7.2 — scoped Bash allowlist for the implementer subprocess.
+   * Replaces unconditional `Bash`. Each entry is passed directly to the
+   * Claude CLI's `--allowedTools` glob syntax.
+   *
+   * What's NOT here (intentional):
+   *  - `git commit/push/checkout/reset`: orchestrator owns git state
+   *  - `curl https://...`: no arbitrary external network
+   *  - `rm -rf`: never
+   *  - `npm install`: orchestrator-managed; model edits package.json instead
+   */
+  allowedTools: [
+    // File IO
+    "Read",
+    "Edit",
+    "Write",
+    "MultiEdit",
+    "Glob",
+    "Grep",
+
+    // Package + test runners (scoped)
+    "Bash(npm *)",
+    "Bash(npx *)",
+    "Bash(node *)",
+    "Bash(pnpm *)",
+    "Bash(jest *)",
+    "Bash(vitest *)",
+    "Bash(pytest *)",
+    "Bash(go test *)",
+    "Bash(cargo *)",
+    "Bash(tsc *)",
+    "Bash(eslint *)",
+    "Bash(prettier *)",
+
+    // Git, READ-ONLY (orchestrator owns commits)
+    "Bash(git status *)",
+    "Bash(git diff *)",
+    "Bash(git log *)",
+    "Bash(git show *)",
+    "Bash(git ls-files *)",
+    "Bash(git branch *)",
+
+    // Filesystem inspection
+    "Bash(ls *)",
+    "Bash(cat *)",
+    "Bash(head *)",
+    "Bash(tail *)",
+    "Bash(find *)",
+    "Bash(grep *)",
+    "Bash(rg *)",
+    "Bash(wc *)",
+    "Bash(mkdir *)",
+    "Bash(rm -f *)",
+
+    // Runtime smoke (local only — for v2 runtime verification phase)
+    "Bash(curl http://localhost:* *)",
+    "Bash(curl http://127.0.0.1:* *)",
+    "Bash(curl -X * http://localhost:* *)",
+    "Bash(curl -X * http://127.0.0.1:* *)",
+    "Bash(curl -s *)",
+    "Bash(curl -i *)",
+    "Bash(sqlite3 data/* *)",
+  ] as string[],
 
   claudeCode: {
     bin: process.env.CLAUDE_CODE_PATH ?? "claude",
@@ -43,6 +111,28 @@ export const botConfig = {
       /\bdescribe\.skip\b/,
     ],
     criticMinConfidence: 60,
+    // v2 overhaul: per-criterion minimum verdict to allow ship-without-review.
+    // Any criterion below this drops the run to needs-review even if the
+    // overall confidence is high.
+    criticV2MinPerCriterionVerdict: "probably_yes" as
+      | "clearly_yes"
+      | "probably_yes",
+  },
+
+  /**
+   * v2 overhaul §3 — confidence threshold below which the UNDERSTAND phase
+   * aborts instead of proceeding.
+   */
+  understanding: {
+    minConfidenceToProceed: 60,
+  },
+
+  /**
+   * v2 overhaul §7.1 — implementer can request plan revision when it
+   * discovers the plan is wrong. Capped to prevent loops.
+   */
+  replan: {
+    maxPerRun: 2,
   },
 
   reviewer: {

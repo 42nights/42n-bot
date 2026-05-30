@@ -1,9 +1,36 @@
 import type { Plan, Verdict } from "../verification/types";
+import type {
+  Understanding,
+  CriticV2Report,
+} from "../claude/phases/types";
 import { botConfig } from "../../bot.config";
 
 const tick = (b: boolean) => (b ? "✅" : "❌");
 const warn = (b: boolean) => (b ? "✅" : "⚠️");
 
+const VERDICT_GLYPH: Record<
+  CriticV2Report["implements_acceptance_criteria"][number]["verdict"],
+  string
+> = {
+  clearly_yes: "✅ Clearly yes",
+  probably_yes: "✅ Probably yes",
+  uncertain: "⚠️ Uncertain",
+  probably_no: "❌ Probably no",
+  clearly_no: "❌ Clearly no",
+};
+
+/**
+ * Renders the PR body Otis posts when opening a PR.
+ *
+ * v2 overhaul §10: the "Does this resolve the issue?" table is now the FIRST
+ * thing a reviewer sees. If even one acceptance criterion is `uncertain` or
+ * worse, the PR ships with `bot-needs-review` and the offending row is what
+ * tells the reviewer where to look.
+ *
+ * Backwards-compatible: when there's no understanding/critic-v2 data (legacy
+ * run from before the overhaul), we fall back to the v1 verification-report
+ * layout so old runs don't render as broken.
+ */
 export function renderPrBody(args: {
   issue: { number: number; title: string; body: string };
   plan: Plan;
@@ -12,10 +39,15 @@ export function renderPrBody(args: {
   runId: number;
   costUsd: number;
   needsReview: boolean;
+  // v2 fields — optional for back-compat.
+  understanding?: Understanding | null;
+  criticV2?: CriticV2Report | null;
+  runtimeVerification?: { ok: boolean; summary: string } | null;
 }): string {
   const v = args.verdict.checks;
+
   const head = args.needsReview
-    ? "> [!WARNING]\n> This PR did not pass verification after the configured iteration budget. A human must read it carefully before merging.\n\n"
+    ? "> [!WARNING]\n> This PR did not pass verification cleanly. A human must read it carefully before merging — specifics below.\n\n"
     : "";
 
   const editedTests = args.plan.tests_to_add_or_update.length
@@ -30,34 +62,67 @@ export function renderPrBody(args: {
     .slice(0, 200)
     .replace(/\n/g, "\n> ");
 
-  const critic = v.critic.detail as
+  const userVisible =
+    args.understanding?.user_visible_outcome ??
+    args.plan.user_visible_change;
+
+  const planJson = JSON.stringify(args.plan, null, 2);
+
+  // ─── Acceptance verdict table ──────────────────────────────────────────
+  const acceptanceTable = renderAcceptanceTable(
+    args.understanding,
+    args.criticV2,
+  );
+
+  // ─── Static-check report (existing v1 surface, kept) ───────────────────
+  const v1Critic = v.critic?.detail as
     | {
         merge_confidence?: number;
         one_line_summary?: string;
         missed_edge_cases?: string[];
       }
     | undefined;
+  const v2 = args.criticV2;
 
-  const edgeCases = critic?.missed_edge_cases ?? [];
+  const criticLine = v2
+    ? `**Critic v2:** ${v2.merge_confidence}/100 — ${v2.one_line_summary}`
+    : v1Critic
+      ? `**Critic:** ${v1Critic.merge_confidence ?? "—"}/100 — ${v1Critic.one_line_summary ?? "—"}`
+      : "_Critic did not produce a report._";
+
+  const edgeCases = v2
+    ? v2.hidden_bugs.map((b) => `${b.severity.toUpperCase()}: ${b.description}`)
+    : (v1Critic?.missed_edge_cases ?? []);
   const edgeBlock = edgeCases.length
     ? edgeCases.map((e) => `- ${e}`).join("\n")
     : "_None flagged._";
 
-  // C6: collapse the full plan into a <details> so reviewers can audit
-  // what the bot intended without scrolling past it.
-  const planJson = JSON.stringify(args.plan, null, 2);
+  // ─── Runtime report (only if it ran) ───────────────────────────────────
+  const runtimeRow = args.runtimeVerification
+    ? `| Runtime smoke | ${tick(args.runtimeVerification.ok)} ${args.runtimeVerification.summary} |\n`
+    : "";
+
+  // ─── Acceptance-tests row appears only when the v2 check ran ──────────
+  const acceptanceRow = v.acceptance_tests
+    ? `| Acceptance tests | ${tick(v.acceptance_tests.pass)} ${v.acceptance_tests.message} |\n`
+    : "";
 
   return `${head}## What changed
-${args.plan.user_visible_change}
+
+${userVisible}
 
 Closes #${args.issue.number}
 
+${acceptanceTable}
+
 ## Why
+
 ${args.issue.title}
 
 > ${issueExcerpt}
 
 ## Plan that was followed
+
 - **Files changed:** ${editedFiles}
 - **Tests added/updated:** ${editedTests}
 - **Complexity:** ${args.plan.complexity}
@@ -76,23 +141,66 @@ ${planJson}
 |---|---|
 | Typecheck | ${tick(v.typecheck.pass)} |
 | Existing tests | ${tick(v.existing_tests.pass)} |
-| New tests added per plan | ${tick(v.plan_tests_added.pass)} |
+${acceptanceRow}${runtimeRow}| New tests added per plan | ${tick(v.plan_tests_added.pass)} |
 | Mutation-light (new tests fail pre / pass post) | ${tick(v.mutation_light.pass)} |
 | Lint | ${warn(v.lint.pass)} |
 | Diff size | ${warn(v.diff_size.pass)} |
 | Banned patterns | ${tick(v.banned_patterns.pass)} |
-| Critic confidence | ${critic?.merge_confidence ?? "—"}/100 |
 
-**Critic summary:** ${critic?.one_line_summary ?? "—"}
-${args.attempts > 1 ? `\n> _This PR took ${args.attempts} iteration(s) to pass verification._` : ""}
+${criticLine}
+${args.attempts > 1 ? `\n> _This PR took ${args.attempts} iteration(s) to pass verification._\n` : ""}
 
 ## Suggested human-review focus
+
 ${edgeBlock}
 
 ## Cost
+
 $${args.costUsd.toFixed(4)} USD across ${args.attempts} attempts.
 
 ---
-🤖 Generated by the 42n-bot. See [internal dashboard](${botConfig.dashboard.url}/runs/${args.runId}) for full event log.
+
+🤖 Generated by Otis. See [the session](${botConfig.dashboard.url}/sessions/${args.runId}) for the full narration + replay.
 `;
+}
+
+function renderAcceptanceTable(
+  understanding: Understanding | null | undefined,
+  criticV2: CriticV2Report | null | undefined,
+): string {
+  // Legacy run — no understanding phase ran. Skip the section so the PR
+  // body renders cleanly without empty headers.
+  if (!understanding) return "";
+
+  const criteria = understanding.acceptance_criteria;
+  if (criteria.length === 0) return "";
+
+  // Build a lookup from criterion text → critic verdict + evidence.
+  const verdictByCriterion = new Map(
+    (criticV2?.implements_acceptance_criteria ?? []).map((c) => [
+      c.criterion,
+      c,
+    ]),
+  );
+
+  const rows = criteria
+    .map((c) => {
+      const hit = verdictByCriterion.get(c);
+      if (!hit) {
+        return `| ${escapePipe(c)} | _Not adjudicated_ | _Critic v2 did not produce a verdict for this criterion._ |`;
+      }
+      return `| ${escapePipe(c)} | ${VERDICT_GLYPH[hit.verdict]} | ${escapePipe(hit.evidence)} |`;
+    })
+    .join("\n");
+
+  return `## Does this resolve the issue?
+
+| Acceptance criterion | Verdict | Evidence |
+|---|---|---|
+${rows}
+`;
+}
+
+function escapePipe(s: string): string {
+  return s.replace(/\|/g, "\\|").replace(/\n/g, " ");
 }

@@ -29,6 +29,18 @@ export type EventKind =
   | "review.proposed"
   | "review.deduped"
   | "review.opened_issue"
+  | "understand.started"
+  | "understand.completed"
+  | "understand.failed"
+  | "reproduce.started"
+  | "reproduce.completed"
+  | "reproduce.failed"
+  | "design.started"
+  | "design.completed"
+  | "design.failed"
+  | "replan.started"
+  | "replan.completed"
+  | "replan.failed"
   | "log";
 
 export function emitEvent(runId: number, kind: EventKind, payload: unknown = {}) {

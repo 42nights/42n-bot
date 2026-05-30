@@ -34,6 +34,9 @@ const verdict = {
         missed_edge_cases: ["DNS failure mid-retry"],
       },
     },
+    acceptance_tests: { name: "acceptance_tests" as const, pass: true, hardGate: true, message: "ok" },
+    critic_v2: { name: "critic_v2" as const, pass: true, hardGate: false, message: "ok" },
+    runtime_verification: { name: "runtime_verification" as const, pass: true, hardGate: false, message: "No runtime surface declared — skipped." },
   },
 };
 
@@ -60,7 +63,8 @@ describe("renderPrBody", () => {
     expect(body).toContain("Looks good, well-scoped retry.");
   });
   it("includes a link to the dashboard", () => {
-    expect(body).toContain("/runs/142");
+    // v2 overhaul: PR bodies link to /sessions/[id] now, not /runs/[id].
+    expect(body).toContain("/sessions/142");
   });
   it("does NOT include the WARNING block when verification passed", () => {
     expect(body).not.toContain("[!WARNING]");
