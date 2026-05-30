@@ -67,6 +67,26 @@ describe("extractJson", () => {
     expect(extractJson('Here:\n```json\n{"v":5}\n```')).toEqual({ v: 5 });
   });
 
+  // QA6: structural edge cases for the O(n) single-pass.
+  it("recovers valid JSON after mismatched brackets", () => {
+    expect(extractJson('{ ] } then {"ok":1}')).toEqual({ ok: 1 });
+  });
+  it("treats brackets inside a string value as non-structural", () => {
+    expect(extractJson('{"k":"a [weird] } value"}')).toEqual({
+      k: "a [weird] } value",
+    });
+  });
+  it("skips a stray closer in prose, then finds JSON", () => {
+    expect(extractJson("we close } here. {\"real\":true}")).toEqual({
+      real: true,
+    });
+  });
+  it("handles deep nesting", () => {
+    expect(extractJson('{"a":{"b":{"c":{"d":[1,2,3]}}}}')).toEqual({
+      a: { b: { c: { d: [1, 2, 3] } } },
+    });
+  });
+
   // QA4: O(n²) DoS guard — thousands of unbalanced openers before real JSON
   // must not hang. Should complete near-instantly (budget-bounded).
   it("does not hang on pathological unbalanced-brace input", () => {
