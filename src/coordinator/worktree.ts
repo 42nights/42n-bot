@@ -6,6 +6,8 @@ import { botConfig } from "../../bot.config";
 import { db } from "../db";
 import { log } from "../shared/logger";
 import { ACTIVE_STATUSES } from "../shared/statuses";
+import { ensureBaseDeps, linkNodeModulesIntoWorktree } from "../orchestrator/deps";
+import { removeLabel } from "../github/client";
 
 /**
  * Crashed git operations (worktree add, push, fetch) sometimes leave lock
@@ -53,6 +55,13 @@ export async function createWorktree(args: {
 
   const git = simpleGit(args.repoDir);
   await git.fetch("origin", baseBranch);
+
+  // Install deps in the base clone (idempotent) BEFORE creating the worktree,
+  // so the worktree we hand the implementer can actually run tests. Without
+  // this the verification harness has no node_modules and the implementer
+  // thrashes against `<runner>: not found`.
+  await ensureBaseDeps(args.repoDir);
+
   // git worktree add -b <new-branch> <path> <origin/<baseBranch>>
   await git.raw([
     "worktree",
@@ -62,6 +71,9 @@ export async function createWorktree(args: {
     worktreePath,
     `origin/${baseBranch}`,
   ]);
+
+  // Share the base clone's node_modules into the fresh worktree (symlink).
+  await linkNodeModulesIntoWorktree(args.repoDir, worktreePath);
 
   return { branch, worktreePath };
 }
@@ -170,6 +182,28 @@ export async function recoverCrashedRuns(repoDir: string) {
     db.prepare(
       `UPDATE runs SET status='failed', error_message='coordinator restart', finished_at=? WHERE id=?`,
     ).run(Date.now(), r.id);
+
+    // Release the claim. The implementer applies `bot-claimed` as a
+    // cross-process lock the moment it picks an issue up; if it's killed
+    // mid-run (deploy, crash, restart), that label sticks and permanently
+    // blocks re-pickup — the issue looks "claimed" forever with no live run.
+    // Drop it (keep `bot-please`) so the next poll retries the issue.
+    if (r.issue_number != null) {
+      const [owner, name] = r.repo.split("/");
+      if (owner && name) {
+        await removeLabel({
+          owner,
+          repo: name,
+          issue_number: r.issue_number,
+          label: botConfig.labels.claimed,
+        }).catch((err) =>
+          log.warn(
+            "worktree",
+            `could not release bot-claimed on ${r.repo}#${r.issue_number}: ${err}`,
+          ),
+        );
+      }
+    }
     cleaned++;
   }
   return cleaned;

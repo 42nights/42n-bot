@@ -204,8 +204,16 @@ async function main() {
 
   log.info("coord", "42n-bot coordinator started");
 
-  await pollOnce();
-  await reviewerOnce();
+  // Fire the initial poll + reviewer pass WITHOUT awaiting. Awaiting them
+  // here blocks every setInterval below from registering until they finish —
+  // and the startup reviewer pass spawns a multi-minute Claude subprocess, so
+  // the coordinator would be deaf to dispatch signals + polling for the whole
+  // pass. Fire-and-forget so the intervals (especially the 2s dispatch drain)
+  // come online immediately.
+  pollOnce().catch((err) => log.error("coord", `startup poll error: ${err}`));
+  reviewerOnce().catch((err) =>
+    log.error("coord", `startup reviewer error: ${err}`),
+  );
 
   setInterval(() => {
     pollOnce().catch((err) => log.error("coord", `poll error: ${err}`));

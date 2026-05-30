@@ -138,7 +138,10 @@ export const botConfig = {
   },
 
   reviewer: {
-    enabled: true,
+    // Env override so the scheduled reviewer can be turned off without a code
+    // change (e.g. to give the implementer the full CLI/budget during a demo,
+    // or on a deploy that should only fix tagged issues, not file new ones).
+    enabled: process.env.REVIEWER_ENABLED !== "0",
     intervalMinutes: 360,
     maxIssuesPerRun: 3,
     duplicateThreshold: 0.78,

@@ -11,9 +11,14 @@ import { botConfig } from "../../bot.config";
  * verification harness — `plan_tests_added` and `diff_size` see only
  * modifications to already-tracked files.
  */
+// We symlink node_modules into each worktree (see orchestrator/deps.ts). Most
+// repos gitignore it, but not all — exclude it from every diff op explicitly so
+// the dependency symlink can never leak into a PR or the diff-size gate.
+const EXCLUDE_DEPS = ":(exclude)node_modules";
+
 export async function getDiffText(cwd: string, baseRef = "HEAD"): Promise<string> {
   await intentToAddUntracked(cwd);
-  const r = await runCmd(["git", "diff", baseRef, "--", "."], cwd);
+  const r = await runCmd(["git", "diff", baseRef, "--", ".", EXCLUDE_DEPS], cwd);
   return r.stdout;
 }
 
@@ -23,7 +28,10 @@ export async function getChangedFiles(
   baseRef = "HEAD",
 ): Promise<string[]> {
   await intentToAddUntracked(cwd);
-  const r = await runCmd(["git", "diff", "--name-only", baseRef, "--", "."], cwd);
+  const r = await runCmd(
+    ["git", "diff", "--name-only", baseRef, "--", ".", EXCLUDE_DEPS],
+    cwd,
+  );
   return r.stdout
     .split("\n")
     .map((s) => s.trim())
@@ -36,7 +44,7 @@ export async function getChangedFiles(
  */
 async function intentToAddUntracked(cwd: string): Promise<void> {
   const ls = await runCmd(
-    ["git", "ls-files", "--others", "--exclude-standard"],
+    ["git", "ls-files", "--others", "--exclude-standard", "--", ".", EXCLUDE_DEPS],
     cwd,
   );
   const files = ls.stdout

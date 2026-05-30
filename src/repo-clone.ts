@@ -169,6 +169,32 @@ export async function ensureLocalClone(repoId: number): Promise<{
   }
 }
 
+/**
+ * Mint a fresh, authenticated remote URL for pushing. The token embedded in
+ * origin at clone time is a GitHub App installation token (ghs_…) that expires
+ * after one hour — so by push time it's almost always stale and the push fails
+ * with "Invalid username or token". (Fetch survives a stale token on a public
+ * repo via anonymous read; push never does.) Mint a fresh one each push.
+ *
+ * Returns the token alongside the URL so the caller can scrub it from any error
+ * message before logging.
+ */
+export async function freshPushAuth(
+  owner: string,
+  name: string,
+): Promise<{ url: string; token: string | null }> {
+  let token: string | null = null;
+  if (appConfigured()) {
+    const installId = installationIdForRepo(owner, name);
+    if (installId) {
+      token = await tokenForInstallation(installId);
+    }
+  }
+  if (!token) token = process.env.GITHUB_TOKEN ?? null;
+  const url = cloneUrlFor({ owner, name, token });
+  return { url, token };
+}
+
 export type CloneResult = Awaited<ReturnType<typeof ensureLocalClone>>;
 
 export async function ensureLocalCloneForRepo(

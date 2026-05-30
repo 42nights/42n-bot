@@ -35,6 +35,7 @@ import {
 import { emitEvent } from "../shared/events";
 import { log } from "../shared/logger";
 import { dayBudgetOk, issueBudgetOk } from "./budget";
+import { freshPushAuth } from "../repo-clone";
 
 const PlanSchema = z.object({
   files_to_change: z.array(
@@ -745,7 +746,10 @@ export async function runImplementer(input: ImplementerInput): Promise<{
 
     // 5. Open PR
     const git = simpleGit(worktreePath);
-    await git.add(["-A"]);
+    // Stage everything EXCEPT node_modules — we symlink the base clone's
+    // node_modules into the worktree (orchestrator/deps.ts), and on a repo that
+    // doesn't gitignore it `git add -A` would otherwise commit the symlink.
+    await git.add(["-A", "--", ".", ":(exclude)node_modules"]);
     const status = await git.status();
     if (!status.files.length) {
       updateRun(runId, {
@@ -771,7 +775,21 @@ export async function runImplementer(input: ImplementerInput): Promise<{
     await git.commit(
       `bot: ${input.issue.title}\n\nCloses #${input.issue.number}\n\n${summary}\n\nPrompt-version: ${PROMPT_VERSION}`,
     );
-    await git.push("origin", branch!, ["--set-upstream"]);
+
+    // Push with a freshly-minted token (the clone-time token has expired) to an
+    // explicit URL — avoids mutating shared worktree git config under
+    // concurrency. Scrub the token from any failure before it surfaces.
+    const { url: pushUrl, token: pushToken } = await freshPushAuth(
+      input.owner,
+      input.repo,
+    );
+    try {
+      await git.push(pushUrl, `${branch!}:${branch!}`);
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      const scrubbed = pushToken ? raw.replaceAll(pushToken, "<token>") : raw;
+      throw new Error(`push failed: ${scrubbed}`);
+    }
 
     const costRow = db
       .prepare(`SELECT cost_usd FROM runs WHERE id = ?`)
