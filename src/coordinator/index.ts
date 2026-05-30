@@ -81,6 +81,28 @@ async function pollOnce() {
         | undefined;
       if (existingRun) continue;
 
+      // Circuit breaker: stop re-picking an issue that keeps failing/abandoning.
+      // A deliberate abort de-labels itself, but a repeated infra failure (e.g.
+      // a transient git/clone error) keeps bot-please and would loop — and a $0
+      // failure never trips the per-issue budget cap. Bound recent terminal
+      // failures so a human has to remove + re-add bot-please to retry.
+      const recentFails = db
+        .prepare(
+          `SELECT COUNT(*) AS c FROM runs
+             WHERE repo=? AND issue_number=? AND status IN ('failed','abandoned')
+               AND started_at > ?`,
+        )
+        .get(repoFull, issue.number, Date.now() - 2 * 60 * 60 * 1000) as {
+        c: number;
+      };
+      if (recentFails.c >= 3) {
+        log.warn(
+          "coord",
+          `${repoFull}#${issue.number}: ${recentFails.c} failed/abandoned runs in 2h — circuit breaker tripped, skipping (remove + re-add bot-please to retry)`,
+        );
+        continue;
+      }
+
       const repoDir = repoCfg.repo_dir ?? process.env.REPO_DIR;
       if (!repoDir) {
         log.warn(

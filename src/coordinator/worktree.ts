@@ -28,6 +28,27 @@ export async function clearGitLocks(repoDir: string): Promise<void> {
   );
 }
 
+// Per-repoDir async mutex. `git worktree add` and `git fetch` both write the
+// SHARED .git dir (`.git/config`, FETCH_HEAD). Two concurrent runs on the same
+// repo otherwise race on `.git/config.lock` → "could not lock config file:
+// File exists" and one run dies. The coordinator creates all worktrees in one
+// process, so chaining the git-mutating sections on a promise serializes them.
+const repoGitChain = new Map<string, Promise<unknown>>();
+async function withRepoGitLock<T>(
+  repoDir: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const prev = repoGitChain.get(repoDir) ?? Promise.resolve();
+  const run = prev.catch(() => {}).then(fn);
+  // Keep the chain alive but swallow errors so one failure doesn't poison the
+  // next waiter.
+  repoGitChain.set(
+    repoDir,
+    run.catch(() => {}),
+  );
+  return run;
+}
+
 const PROTECTED_REFS = new Set(["main", "master", "trunk", "develop"]);
 
 /** Belt-and-suspenders: anything that touches branches in the bot must call this first. */
@@ -53,24 +74,28 @@ export async function createWorktree(args: {
 
   await fs.mkdir(botConfig.workspaceRoot, { recursive: true });
 
-  const git = simpleGit(args.repoDir);
-  await git.fetch("origin", baseBranch);
-
-  // Install deps in the base clone (idempotent) BEFORE creating the worktree,
-  // so the worktree we hand the implementer can actually run tests. Without
+  // Install deps in the base clone (idempotent, own mutex, no .git writes) BEFORE
+  // the worktree so the worktree we hand the implementer can run tests. Without
   // this the verification harness has no node_modules and the implementer
   // thrashes against `<runner>: not found`.
   await ensureBaseDeps(args.repoDir);
 
-  // git worktree add -b <new-branch> <path> <origin/<baseBranch>>
-  await git.raw([
-    "worktree",
-    "add",
-    "-b",
-    branch,
-    worktreePath,
-    `origin/${baseBranch}`,
-  ]);
+  // Serialize the .git-mutating ops so concurrent runs don't collide on
+  // .git/config.lock. clearGitLocks first sweeps any lock a crashed op left.
+  await withRepoGitLock(args.repoDir, async () => {
+    const git = simpleGit(args.repoDir);
+    await clearGitLocks(args.repoDir);
+    await git.fetch("origin", baseBranch);
+    // git worktree add -b <new-branch> <path> <origin/<baseBranch>>
+    await git.raw([
+      "worktree",
+      "add",
+      "-b",
+      branch,
+      worktreePath,
+      `origin/${baseBranch}`,
+    ]);
+  });
 
   // Share the base clone's node_modules into the fresh worktree (symlink).
   await linkNodeModulesIntoWorktree(args.repoDir, worktreePath);

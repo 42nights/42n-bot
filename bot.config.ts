@@ -27,6 +27,10 @@ export const botConfig = {
     cantReproduce: "bot-cant-reproduce",
     // v2 overhaul: design produced; awaiting `@bot proceed` confirmation.
     confirmDesign: "bot-confirm-design",
+    // Otis examined the issue and chose not to attempt it (unclear/unreproducible
+    // /too vague). Signals a human needs to clarify; bot-please is removed so the
+    // poller doesn't re-pick the same un-actionable issue in a loop.
+    needsInfo: "bot-needs-info",
   },
 
   /**

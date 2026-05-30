@@ -388,6 +388,14 @@ Your task — execute in order:
    handler, and follow imports until you find the relevant code path. List
    every file you read in relevant_files.
 
+   BUT bound your search. If a handful of targeted greps/reads do not surface a
+   SPECIFIC code location the issue maps to — because the issue is too vague
+   (e.g. "make it faster", "improve UX") or describes a bug that simply isn't
+   present in the code — STOP exploring and go straight to proceed=false (step
+   6). Do NOT exhaustively read the whole codebase hunting for an unspecified
+   problem; a fast, honest "this is too vague, here's what I'd need" beats
+   burning the entire phase budget and timing out.
+
 2. Classify the issue. Bug, feature, refactor, docs, infra, or unclear.
 
 3. Write the acceptance criteria. These are CONCRETE OBSERVABLE CONDITIONS

@@ -367,13 +367,22 @@ export async function runImplementer(input: ImplementerInput): Promise<{
         owner: input.owner,
         repo: input.repo,
         issue_number: input.issue.number,
-        body: `🤖 Otis examined this issue and chose not to attempt an implementation.\n\n**Reason:** ${reason}${unknownsBlock}`,
+        body: `🤖 Otis examined this issue and chose not to attempt an implementation.\n\n**Reason:** ${reason}${unknownsBlock}\n\n_Re-apply \`bot-please\` once the issue is clarified to have me try again._`,
+      }).catch(() => {});
+      // Deliberate non-attempt: the issue is unclear/unreproducible. Re-running
+      // UNDERSTAND would just abort again, so REMOVE bot-please (else the poller
+      // re-picks it forever) and tag it bot-needs-info for a human to clarify.
+      await addLabel({
+        owner: input.owner,
+        repo: input.repo,
+        issue_number: input.issue.number,
+        label: botConfig.labels.needsInfo,
       }).catch(() => {});
       await cleanupLabels({
         owner: input.owner,
         repo: input.repo,
         issue_number: input.issue.number,
-        alsoRemovePlease: false,
+        alsoRemovePlease: true,
       });
       updateRun(runId, {
         status: "abandoned",
