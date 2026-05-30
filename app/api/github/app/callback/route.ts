@@ -9,6 +9,9 @@ import { ensureLocalClone } from "@/src/repo-clone";
 import { log } from "@/src/shared/logger";
 
 export const runtime = "nodejs";
+// QA6: bound the install-callback response time — it lists every installation
+// repo and clones in the background.
+export const maxDuration = 60;
 
 /**
  * GitHub's "Setup URL" post-install redirect lands here. The query string

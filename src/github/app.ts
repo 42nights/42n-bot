@@ -192,6 +192,12 @@ export async function listInstallationRepos(installationId: number): Promise<
     description: string | null;
   }>
 > {
+  // QA6 (R6 finding): cap pagination. A GitHub App installed on an org with
+  // thousands of repos would otherwise paginate through ALL of them at
+  // install time — unbounded memory + a hung callback response. 5000 covers
+  // any realistic install; beyond that we warn and stop (matches the
+  // listAllOpenIssues cap pattern).
+  const CAP = 5000;
   const octo = ghInstallation(installationId);
   const out: Array<{
     owner: string;
@@ -220,6 +226,13 @@ export async function listInstallationRepos(installationId: number): Promise<
           html_url: r.html_url,
           description: r.description,
         });
+        if (out.length >= CAP) {
+          log.warn(
+            "gh-app",
+            `installation ${installationId} has >= ${CAP} repos — only the first ${CAP} were connected.`,
+          );
+          return out;
+        }
       }
     }
   } catch (err) {
