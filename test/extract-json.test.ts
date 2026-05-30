@@ -66,4 +66,22 @@ describe("extractJson", () => {
   it("still finds JSON inside a fence when there is no bare JSON first", () => {
     expect(extractJson('Here:\n```json\n{"v":5}\n```')).toEqual({ v: 5 });
   });
+
+  // QA4: O(n²) DoS guard — thousands of unbalanced openers before real JSON
+  // must not hang. Should complete near-instantly (budget-bounded).
+  it("does not hang on pathological unbalanced-brace input", () => {
+    const evil = "{ ".repeat(50_000) + '[{"valid":1}]';
+    const start = Date.now();
+    const result = extractJson(evil);
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(500); // bounded, not O(n²)
+    // It may return undefined (budget exhausted) or the valid array — either
+    // is acceptable; the contract is "doesn't hang".
+    expect(result === undefined || Array.isArray(result)).toBe(true);
+  });
+
+  it("still finds valid JSON quickly when it is early in a large string", () => {
+    const s = '{"early":true}' + "x".repeat(500_000);
+    expect(extractJson(s)).toEqual({ early: true });
+  });
 });

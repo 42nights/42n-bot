@@ -108,16 +108,25 @@ export async function runClaudeHeadless(opts: {
  * `{placeholder}`, etc.) instead of choking on them.
  */
 export function extractJson(s: string): unknown {
+  // QA4: bound total scan work. The naive "try every opener, scan to EOF"
+  // is O(n²) on pathological input (e.g. thousands of unbalanced `{` before
+  // the real JSON). We can't simply break on the first unbalanced opener —
+  // an unclosed `{` ignores `[]`, so valid JSON can still be nested later —
+  // so instead we cap the TOTAL characters scanned across all attempts.
+  // Legitimate output finds its JSON in the first region (cheap); a
+  // garbage/attack string just exhausts the budget and returns undefined.
+  const budget = { left: Math.max(200_000, s.length * 4) };
   for (let i = 0; i < s.length; i++) {
+    if (budget.left <= 0) break;
     const opener = s[i];
     if (opener !== "{" && opener !== "[") continue;
-    const region = balancedRegion(s, i);
+    const region = balancedRegion(s, i, budget);
     if (region === null) continue;
     try {
-      const parsed = JSON.parse(s.slice(i, region + 1));
-      return parsed;
+      return JSON.parse(s.slice(i, region + 1));
     } catch {
-      // Not valid JSON at this position — keep scanning for the next opener.
+      // Balanced braces but not valid JSON (e.g. `{placeholder}`). Continue
+      // scanning — valid JSON may still appear later (or nested).
       continue;
     }
   }
@@ -126,16 +135,21 @@ export function extractJson(s: string): unknown {
 
 /**
  * Returns the index of the matching closer for the opener at `start`, or null
- * if the braces don't balance before the string ends. String-aware (ignores
- * braces inside JSON string literals + handles escapes).
+ * if the braces don't balance before the string ends OR the scan budget runs
+ * out. String-aware (ignores braces inside JSON string literals + escapes).
  */
-function balancedRegion(s: string, start: number): number | null {
+function balancedRegion(
+  s: string,
+  start: number,
+  budget: { left: number },
+): number | null {
   const opener = s[start];
   const closer = opener === "{" ? "}" : "]";
   let depth = 0;
   let inStr = false;
   let esc = false;
   for (let i = start; i < s.length; i++) {
+    if (--budget.left <= 0) return null;
     const c = s[i];
     if (inStr) {
       if (esc) {

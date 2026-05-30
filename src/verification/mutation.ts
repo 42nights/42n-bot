@@ -71,14 +71,24 @@ export async function checkMutationLight(
   for (const t of testFiles) {
     const restore = await runCmd(["git", "checkout", "stash@{0}", "--", t], cwd);
     if (restore.exitCode !== 0) {
-      // Best-effort: pop the stash to leave the tree as we found it.
-      await runCmd(["git", "stash", "pop"], cwd).catch(() => {});
+      // Try to pop the stash so we leave the tree as we found it.
+      const pop = await runCmd(["git", "stash", "pop"], cwd);
+      // QA4: if the recovery pop ALSO fails, the worktree is now inconsistent
+      // (the implementer's changes are stuck in the stash). Signal
+      // `broken: true` so the implementer aborts instead of iterating in a
+      // corrupted tree — same contract as the stash-pop path below.
+      const broken = pop.exitCode !== 0;
       return {
         name: "mutation_light",
         pass: false,
         hardGate: true,
-        message: `Could not restore test file "${t}" from stash for the mutation check (it may have been deleted in the diff).`,
-        detail: { restoreStderr: restore.stderr },
+        message: broken
+          ? `Could not restore test file "${t}" AND the stash recovery pop failed — worktree is in an inconsistent state. Aborting.`
+          : `Could not restore test file "${t}" from stash for the mutation check (it may have been deleted in the diff).`,
+        detail: {
+          restoreStderr: restore.stderr,
+          ...(broken ? { popStderr: pop.stderr, broken: true } : {}),
+        },
       };
     }
   }

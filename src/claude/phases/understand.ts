@@ -23,11 +23,13 @@ function postValidate(
   cwd: string,
 ): Understanding {
   if (understanding.relevant_files.length === 0) return understanding;
+  const base = path.resolve(cwd);
   const missing: string[] = [];
   for (const rf of understanding.relevant_files) {
-    // `path` relative to the worktree. Reject anything that tries to escape.
+    // `path` relative to the worktree. Reject anything that escapes. QA4:
+    // separator-aware so a sibling dir `<base>-evil/...` isn't accepted.
     const abs = path.resolve(cwd, rf.path);
-    if (!abs.startsWith(path.resolve(cwd))) {
+    if (abs !== base && !abs.startsWith(base + path.sep)) {
       missing.push(rf.path);
       continue;
     }

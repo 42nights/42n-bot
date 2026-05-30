@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ensureSchema } from "@/src/db/migrate";
-import { getCron, recordCronRun } from "@/src/cron/store";
+import { getCron } from "@/src/cron/store";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -32,8 +32,14 @@ export async function POST(
     const result = await tickScheduler();
     return NextResponse.json({ ok: true, fired: result.fired });
   } catch (err) {
+    // QA4: do NOT record a cron_runs failure here. A throw from tickScheduler
+    // is a SCHEDULER-level error (e.g. the DB was briefly unavailable during
+    // dueCrons), not a cron-fire failure — the cron may never have been
+    // claimed. Recording it would write a phantom history row AND, because
+    // claimDueCron never advanced next_run_at, the cron stays due and fires
+    // again on the next tick (double history for one "fire now"). The
+    // scheduler's own per-cron catch already records genuine fire failures.
     const message = err instanceof Error ? err.message : String(err);
-    recordCronRun(cron.id, { ok: false, message });
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

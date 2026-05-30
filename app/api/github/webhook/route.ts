@@ -40,17 +40,19 @@ export async function POST(req: NextRequest) {
     return new Response("forbidden", { status: 403 });
   }
 
-  // QA3 (R3 finding 23): replay protection. GitHub may redeliver, and a
-  // captured-and-replayed delivery would otherwise double-process (double
-  // dispatch, duplicate pr.merged). Dedupe on the delivery id we already
-  // persist in the audit event payload.
+  // QA3 (R3 finding 23) + QA4: replay protection via an indexed UNIQUE
+  // delivery_id. The INSERT ... ON CONFLICT atomically claims the delivery —
+  // if it was already seen, `changes === 0` and we bail. Exact match on a
+  // bound parameter, so no LIKE-wildcard or injection surface (and the
+  // deliveryId is only trusted post-HMAC anyway).
   if (deliveryId) {
-    const seen = db
+    const claim = db
       .prepare(
-        `SELECT 1 FROM events WHERE run_id = 0 AND payload_json LIKE ? LIMIT 1`,
+        `INSERT INTO webhook_deliveries (delivery_id, event, received_at)
+         VALUES (?, ?, ?) ON CONFLICT(delivery_id) DO NOTHING`,
       )
-      .get(`%"deliveryId":"${deliveryId}"%`) as { 1: number } | undefined;
-    if (seen) {
+      .run(deliveryId, eventName, Date.now());
+    if (claim.changes === 0) {
       log.info("webhook", `duplicate delivery ${deliveryId} — ignoring`);
       return new Response("duplicate", { status: 200 });
     }

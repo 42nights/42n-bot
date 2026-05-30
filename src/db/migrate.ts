@@ -82,6 +82,17 @@ export function runMigrations() {
 
     CREATE INDEX IF NOT EXISTS idx_phase_costs_run ON phase_costs(run_id, phase);
 
+    -- QA4: webhook delivery dedup. A UNIQUE delivery_id makes replay
+    -- detection an exact-match indexed lookup (no LIKE scan of payload_json,
+    -- no wildcard-injection surface). Pruned alongside cron_runs.
+    CREATE TABLE IF NOT EXISTS webhook_deliveries (
+      delivery_id TEXT PRIMARY KEY,
+      event TEXT,
+      received_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_received ON webhook_deliveries(received_at);
+
     -- v0.3 crons: user-scheduled recurring actions (reviewer passes,
     -- file-an-issue, etc). Scheduler ticks every 30s in the coordinator.
     CREATE TABLE IF NOT EXISTS crons (

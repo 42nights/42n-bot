@@ -33,10 +33,12 @@ function classify(
   relevantFiles: Array<{ path: string }>,
   cwd: string,
 ): { fabricated: boolean } {
+  const base = path.resolve(cwd);
   const missing: string[] = [];
   for (const rf of relevantFiles) {
     const abs = path.resolve(cwd, rf.path);
-    if (!abs.startsWith(path.resolve(cwd))) {
+    // QA4: separator-aware boundary (mirrors understand.ts / reproduce.ts).
+    if (abs !== base && !abs.startsWith(base + path.sep)) {
       missing.push(rf.path);
       continue;
     }
@@ -108,5 +110,13 @@ describe("UNDERSTAND fabrication detection", () => {
       dir,
     );
     expect(r.fabricated).toBe(true); // 50% missing (traversal counts as missing)
+  });
+
+  it("rejects a sibling-directory escape (QA4 separator bug)", () => {
+    // An absolute path whose string-prefix matches the worktree but is a
+    // SIBLING dir (<base>-evil) must be treated as outside, not inside.
+    const sibling = `${path.resolve(dir)}-evil/secret.ts`;
+    const r = classify([{ path: sibling }, { path: "src/real.ts" }], dir);
+    expect(r.fabricated).toBe(true); // sibling counts as missing → 50% → fabricated
   });
 });

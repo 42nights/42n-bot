@@ -66,7 +66,11 @@ export async function runReproduce(opts: {
     if (repro.reproduced) {
       const rel = repro.test_file_path?.trim() ?? "";
       const abs = rel ? path.resolve(opts.cwd, rel) : "";
-      const inside = abs && abs.startsWith(path.resolve(opts.cwd));
+      const base = path.resolve(opts.cwd);
+      // QA4: separator-aware boundary check. `startsWith(base)` alone would
+      // accept a SIBLING dir like `<base>-evil/...` (prefix match, not a
+      // directory boundary). Require an exact match or a `<base>/` prefix.
+      const inside = !!abs && (abs === base || abs.startsWith(base + path.sep));
       const exists = inside && fs.existsSync(abs);
       if (!exists) {
         log.warn(

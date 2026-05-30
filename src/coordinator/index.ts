@@ -202,13 +202,19 @@ async function main() {
         log.error("coord", `reap error (${dir}): ${err}`),
       );
     }
-    // QA3 (R3 finding 7): prune old cron history so a high-frequency cron
-    // can't grow the DB unbounded.
+    // QA3 (R3 finding 7) + QA4: prune old cron history + webhook delivery
+    // records so high-frequency activity can't grow the DB unbounded.
     try {
       const pruned = pruneCronRuns();
       if (pruned) log.info("coord", `pruned ${pruned} old cron_runs row(s)`);
+      const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+      const wh = db
+        .prepare(`DELETE FROM webhook_deliveries WHERE received_at < ?`)
+        .run(cutoff);
+      if (wh.changes)
+        log.info("coord", `pruned ${wh.changes} old webhook_deliveries row(s)`);
     } catch (err) {
-      log.warn("coord", `cron prune error: ${err}`);
+      log.warn("coord", `prune error: ${err}`);
     }
   }, 6 * 60 * 60_000);
 
