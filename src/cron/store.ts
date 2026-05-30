@@ -66,6 +66,47 @@ export function getCron(id: number): CronRow | null {
   );
 }
 
+/**
+ * QA3 (R3 finding 8): bound payloads so a 10MB body can't be persisted into
+ * the payload_json TEXT column (resource exhaustion). Validates per-action
+ * shape too — send_otis needs a sane title/body.
+ */
+const MAX_PAYLOAD_BYTES = 16 * 1024; // 16KB — generous for an issue body
+const MAX_TITLE_LEN = 256;
+const MAX_BODY_LEN = 8 * 1024;
+
+export function validatePayload(
+  action: CronAction,
+  payload: Record<string, unknown>,
+): { ok: true } | { ok: false; error: string } {
+  const size = JSON.stringify(payload).length;
+  if (size > MAX_PAYLOAD_BYTES) {
+    return {
+      ok: false,
+      error: `payload too large (${size} bytes, max ${MAX_PAYLOAD_BYTES})`,
+    };
+  }
+  if (action === "send_otis") {
+    const title = payload.title;
+    const body = payload.body;
+    if (typeof title !== "string" || title.trim().length === 0) {
+      return { ok: false, error: "send_otis requires a non-empty title" };
+    }
+    if (title.length > MAX_TITLE_LEN) {
+      return { ok: false, error: `title too long (max ${MAX_TITLE_LEN})` };
+    }
+    if (body !== undefined && (typeof body !== "string" || body.length > MAX_BODY_LEN)) {
+      return { ok: false, error: `body too long (max ${MAX_BODY_LEN})` };
+    }
+  }
+  if (action === "fix_issue") {
+    if (typeof payload.issue_number !== "number") {
+      return { ok: false, error: "fix_issue requires a numeric issue_number" };
+    }
+  }
+  return { ok: true };
+}
+
 export function createCron(args: {
   name: string;
   schedule: string;
@@ -77,6 +118,8 @@ export function createCron(args: {
   const v = validateSchedule(args.schedule);
   if (!v.ok)
     throw new Error(`Bad cron schedule "${args.schedule}": ${v.error}`);
+  const pv = validatePayload(args.action, args.payload);
+  if (!pv.ok) throw new Error(pv.error);
   const now = Date.now();
   const info = db
     .prepare(
@@ -121,6 +164,16 @@ export function updateCron(
       throw new Error(`Bad cron schedule "${patch.schedule}": ${v.error}`);
     schedule = patch.schedule;
     nextRunAt = v.nextRun ?? null;
+  }
+
+  // QA3: validate the payload when either the payload or the action changes.
+  if (patch.payload !== undefined || patch.action !== undefined) {
+    const effectiveAction = patch.action ?? existing.action;
+    const effectivePayload =
+      patch.payload ??
+      (JSON.parse(existing.payload_json) as Record<string, unknown>);
+    const pv = validatePayload(effectiveAction, effectivePayload);
+    if (!pv.ok) throw new Error(pv.error);
   }
 
   db.prepare(
@@ -171,72 +224,60 @@ export function dueCrons(limit = 10): CronRow[] {
 }
 
 /**
- * Record that a cron fired. Accepts the full row (avoids a re-read + race
- * where the row could be deleted between scheduler-read and history-insert)
- * OR an id-and-schedule pair for the manual-trigger path.
+ * QA3 (R3 finding 6): atomically CLAIM a due cron for firing, cross-process.
  *
- * Wrapped in a transaction so we never advance `next_run_at` without also
- * inserting the cron_runs history row — the bug otherwise was an "invisible
- * fire" where the schedule moved forward but no history was recorded.
+ * The dashboard (Next.js) and the coordinator (daemon) are separate processes
+ * that both tick the scheduler. An in-memory `ticking` guard can't coordinate
+ * across processes, so both could see the same cron as due and fire it twice
+ * (two reviewer subprocesses, two duplicate issues, etc).
+ *
+ * This advances `next_run_at` in a single conditional UPDATE keyed on the
+ * exact value the caller read. Only ONE process's UPDATE will match (the
+ * others find next_run_at already moved). `changes > 0` means "you won the
+ * claim — fire it." The schedule is advanced as part of the claim, so the
+ * history row is recorded separately by `recordCronRun`.
  */
-export function markCronFired(
-  cronOrId: number | { id: number; schedule: string },
-  result: {
-    ok: boolean;
-    message: string;
-    runId?: number;
-  },
-): void {
-  let id: number;
-  let schedule: string | null;
-  if (typeof cronOrId === "number") {
-    const row = getCron(cronOrId);
-    if (!row) return;
-    id = row.id;
-    schedule = row.schedule;
-  } else {
-    id = cronOrId.id;
-    schedule = cronOrId.schedule;
-  }
+export function claimDueCron(cron: CronRow): boolean {
   const now = Date.now();
-  const next = nextFireAt(schedule, now);
-  // QA2: if the cron row was deleted between dueCrons() and now, the UPDATE
-  // hits 0 rows (silent) but the INSERT will FK-violate. Without the early
-  // existence check, the transaction would roll back the schedule advance
-  // and the cron would be "due forever" — infinite retry loop spamming logs
-  // at one error per tick. Skip cleanly when the row is gone.
-  const stillExists = db
-    .prepare(`SELECT 1 FROM crons WHERE id = ?`)
-    .get(id) as { 1: number } | undefined;
-  if (!stillExists) return;
-  const tx = db.transaction(() => {
-    db.prepare(
-      `UPDATE crons SET last_run_at = ?, next_run_at = ?, updated_at = ? WHERE id = ?`,
-    ).run(now, next, now, id);
+  const next = nextFireAt(cron.schedule, now);
+  const res = db
+    .prepare(
+      `UPDATE crons SET next_run_at = ?, last_run_at = ?, updated_at = ?
+         WHERE id = ? AND next_run_at = ?`,
+    )
+    .run(next, now, now, cron.id, cron.next_run_at);
+  return res.changes > 0;
+}
+
+/** Record a cron-fire result in history. Separate from the claim (above). */
+export function recordCronRun(
+  cronId: number,
+  result: { ok: boolean; message: string; runId?: number },
+): void {
+  const now = Date.now();
+  try {
     db.prepare(
       `INSERT INTO cron_runs (cron_id, started_at, finished_at, ok, message, run_id)
        VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(
-      id,
-      now,
-      now,
-      result.ok ? 1 : 0,
-      result.message,
-      result.runId ?? null,
-    );
-  });
-  try {
-    tx();
+    ).run(cronId, now, now, result.ok ? 1 : 0, result.message, result.runId ?? null);
   } catch (err) {
-    // Last-ditch: if a constraint violation slipped through (e.g., the cron
-    // was deleted between the existence check and the transaction), log and
-    // skip rather than re-throwing. The scheduler's per-cron catch would
-    // already swallow this, but doing it here keeps the schedule advance
-    // moving forward instead of getting stuck.
+    // Cron deleted between claim and history insert → FK violation. Skip.
     const msg = err instanceof Error ? err.message : String(err);
-    if (/FOREIGN KEY/i.test(msg) || /no such row/i.test(msg)) return;
-    throw err;
+    if (!/FOREIGN KEY/i.test(msg)) throw err;
   }
+}
+
+/**
+ * QA3 (R3 finding 7): prune cron_runs older than the retention window so a
+ * high-frequency cron (one firing every 5 minutes is ~8.6k rows/month) can't
+ * grow the DB unbounded. Called from the coordinator's 6h reaper.
+ */
+export function pruneCronRuns(retentionDays = 90): number {
+  const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  const res = db
+    .prepare(`DELETE FROM cron_runs WHERE started_at < ?`)
+    .run(cutoff);
+  return res.changes;
 }
 
 export function listCronRuns(cronId: number, limit = 50): CronRunRow[] {

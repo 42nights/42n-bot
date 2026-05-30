@@ -76,14 +76,14 @@ describe("translate", () => {
       ctx,
     );
     expect(line?.kind).toBe("system");
-    expect(line?.status).toBe("warn");
+    if (line?.kind === "system") expect(line.status).toBe("warn");
     expect(line?.text).toContain("type error");
   });
 
   it("marks pr.opened as an ok system line", () => {
     const line = translate(ev("pr.opened", { number: 218 }), ctx);
     expect(line?.kind).toBe("system");
-    expect(line?.status).toBe("ok");
+    if (line?.kind === "system") expect(line.status).toBe("ok");
     expect(line?.text).toContain("#218");
   });
 
@@ -92,7 +92,8 @@ describe("translate", () => {
       ev("implement.failed", { kind: "budget_exceeded" }),
       ctx,
     );
-    expect(line?.status).toBe("fail");
+    expect(line?.kind).toBe("system");
+    if (line?.kind === "system") expect(line.status).toBe("fail");
     expect(line?.text.toLowerCase()).toContain("budget");
   });
 

@@ -3,7 +3,7 @@ import { db } from "../db";
 import { botConfig } from "../../bot.config";
 import { runClaudeCode, runStructuredPlan } from "../claude/runner";
 import {
-  PLAN_JSON_SCHEMA,
+  PLAN_V2_JSON_SCHEMA,
   implementPromptV2,
   iterationPrompt,
   planPromptV2,
@@ -451,7 +451,9 @@ export async function runImplementer(input: ImplementerInput): Promise<{
       }),
       cwd: worktreePath,
       schema: PlanSchema,
-      jsonSchema: PLAN_JSON_SCHEMA,
+      // QA3: must be the V2 schema — the original omits acceptance_test_paths,
+      // so feature runs would silently lose their acceptance gate.
+      jsonSchema: PLAN_V2_JSON_SCHEMA,
       costBudgetUsd: botConfig.budgets.perRunUsd,
       allowedTools: ["Read", "Grep", "Glob"],
       permissionMode: "dontAsk",
@@ -534,12 +536,19 @@ export async function runImplementer(input: ImplementerInput): Promise<{
     let attempt = 0;
     let replanCount = 0;
     let currentPlan = planRes.plan;
-    // v2 §6: persist the acceptance test paths the plan declared so
-    // verification can hard-gate against them.
-    const acceptancePaths: string[] = [
-      ...(reproTestPath ? [reproTestPath] : []),
-      ...((currentPlan.acceptance_test_paths ?? []) as string[]),
-    ];
+    // v2 §6 + QA3: acceptance paths are derived from the CURRENT plan. The
+    // repro test (bugs) is always included; the plan's declared paths are
+    // added. This MUST be recomputed after every replan — a replan can
+    // declare different acceptance_test_paths, and running verification
+    // against the stale set produces confusing hard failures (R3 finding 1/3).
+    const computeAcceptancePaths = (plan: Plan): string[] => {
+      const set = new Set<string>([
+        ...(reproTestPath ? [reproTestPath] : []),
+        ...((plan.acceptance_test_paths ?? []) as string[]),
+      ]);
+      return Array.from(set);
+    };
+    let acceptancePaths = computeAcceptancePaths(currentPlan);
     updateRun(runId, {
       acceptance_test_paths_json: JSON.stringify(acceptancePaths),
     });
@@ -620,6 +629,13 @@ export async function runImplementer(input: ImplementerInput): Promise<{
           if (replanRes.ok) {
             incCost(runId, replanRes.costUsd);
             currentPlan = replanRes.plan as Plan;
+            // QA3 (R3 finding 1/3): recompute acceptance paths from the NEW
+            // plan. Without this, verification would run against the original
+            // plan's test paths and fail confusingly.
+            acceptancePaths = computeAcceptancePaths(currentPlan);
+            updateRun(runId, {
+              acceptance_test_paths_json: JSON.stringify(acceptancePaths),
+            });
             saveArtifact(
               runId,
               `replan-${replanCount}`,

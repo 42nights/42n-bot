@@ -94,29 +94,49 @@ export async function runClaudeHeadless(opts: {
 }
 
 /**
- * Find the first balanced JSON object or array in `s` and parse it. Tolerates
- * preamble/postamble text and code fences so the model doesn't have to be
- * pixel-perfect.
+ * Find the first balanced JSON object or array in `s` that actually PARSES,
+ * and return it. Tolerates preamble/postamble prose and code fences.
+ *
+ * QA3 (R3 finding 12): the previous version pulled the first ```fenced```
+ * block out FIRST, which meant `{"real":1}\n```{"fake":2}```` returned the
+ * fake (the JSON inside a later fence) over the real bare object. And prose
+ * containing a `{placeholder}` would make it give up entirely.
+ *
+ * The fix: scan EVERY balanced `{...}` / `[...]` region from the start of the
+ * string and return the first one that JSON.parses. This is order-preserving
+ * (earliest valid JSON wins) and skips non-JSON brace runs (markdown
+ * `{placeholder}`, etc.) instead of choking on them.
  */
 export function extractJson(s: string): unknown {
-  const fenced = s.match(/```(?:json)?\s*([\s\S]*?)```/);
-  const candidate = fenced ? fenced[1] : s;
-  const firstObj = candidate.indexOf("{");
-  const firstArr = candidate.indexOf("[");
-  const start =
-    firstObj === -1
-      ? firstArr
-      : firstArr === -1
-        ? firstObj
-        : Math.min(firstObj, firstArr);
-  if (start === -1) return undefined;
-  const opener = candidate[start];
+  for (let i = 0; i < s.length; i++) {
+    const opener = s[i];
+    if (opener !== "{" && opener !== "[") continue;
+    const region = balancedRegion(s, i);
+    if (region === null) continue;
+    try {
+      const parsed = JSON.parse(s.slice(i, region + 1));
+      return parsed;
+    } catch {
+      // Not valid JSON at this position — keep scanning for the next opener.
+      continue;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Returns the index of the matching closer for the opener at `start`, or null
+ * if the braces don't balance before the string ends. String-aware (ignores
+ * braces inside JSON string literals + handles escapes).
+ */
+function balancedRegion(s: string, start: number): number | null {
+  const opener = s[start];
   const closer = opener === "{" ? "}" : "]";
   let depth = 0;
   let inStr = false;
   let esc = false;
-  for (let i = start; i < candidate.length; i++) {
-    const c = candidate[i];
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
     if (inStr) {
       if (esc) {
         esc = false;
@@ -136,14 +156,8 @@ export function extractJson(s: string): unknown {
     if (c === opener) depth++;
     else if (c === closer) {
       depth--;
-      if (depth === 0) {
-        try {
-          return JSON.parse(candidate.slice(start, i + 1));
-        } catch {
-          return undefined;
-        }
-      }
+      if (depth === 0) return i;
     }
   }
-  return undefined;
+  return null;
 }

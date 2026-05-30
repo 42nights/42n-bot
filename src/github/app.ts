@@ -94,6 +94,24 @@ export function appConfigured(): boolean {
   return readAppCreds() !== null;
 }
 
+/**
+ * QA3 (R3 finding 10): the GitHub App manifest setup flow saves the
+ * webhook_secret to app_credentials, but the webhook route only read
+ * process.env.GITHUB_WEBHOOK_SECRET — so App-installed webhooks always
+ * failed verification. Read from the DB first, fall back to env.
+ */
+export function readWebhookSecret(): string | null {
+  try {
+    const row = db
+      .prepare(`SELECT webhook_secret FROM app_credentials WHERE id = 1`)
+      .get() as { webhook_secret: string | null } | undefined;
+    if (row?.webhook_secret) return row.webhook_secret;
+  } catch {
+    /* table may not exist yet */
+  }
+  return process.env.GITHUB_WEBHOOK_SECRET ?? null;
+}
+
 export function appName(): string | null {
   return dbAppSlug() ?? process.env.GITHUB_APP_NAME ?? null;
 }

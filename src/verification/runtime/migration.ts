@@ -8,11 +8,20 @@ export type MigrationResult = {
   detail?: unknown;
 };
 
-/** Best-effort heuristic migration runner — target repos vary. */
+/**
+ * Best-effort heuristic migration runner — target repos vary.
+ *
+ * QA3 (R3 finding 5): `expectMigrations` distinguishes "the understanding
+ * said this change adds a migration" from "we just opportunistically check
+ * for one." When a migration was EXPECTED but no runner/dir is found, that's
+ * a real failure — the PR claims to add a migration but didn't — so we
+ * return pass=false instead of silently passing.
+ */
 export async function checkMigration(args: {
   cwd: string;
+  expectMigrations?: boolean;
 }): Promise<MigrationResult> {
-  const { cwd } = args;
+  const { cwd, expectMigrations = false } = args;
 
   // 1. package.json `scripts.migrate`
   const pkgPath = path.join(cwd, "package.json");
@@ -73,5 +82,15 @@ export async function checkMigration(args: {
     };
   }
 
+  // No migration runner / directory found.
+  if (expectMigrations) {
+    return {
+      pass: false,
+      message:
+        "The change declared it adds a migration, but no migration runner " +
+        "(scripts.migrate / prisma/migrations / migrations/) was found in the diff.",
+      detail: { expectMigrations: true, found: false },
+    };
+  }
   return { pass: true, message: "No migration runner detected — skipping." };
 }

@@ -23,15 +23,19 @@ export function requestDispatch(name: DispatchName) {
 /**
  * Returns true if the signal was dirty (and atomically clears it). Used by
  * the coordinator's tight 2s tick.
+ *
+ * QA3 (R3 finding 14): the previous read-then-update was non-atomic — a
+ * webhook flipping dirty=1 between the SELECT and the UPDATE would have its
+ * signal clobbered to 0 and lost. We now clear-and-detect in a SINGLE
+ * statement: `UPDATE ... SET dirty=0 WHERE name=? AND dirty=1` returns
+ * `changes=1` only if it actually transitioned a dirty row, so any signal
+ * raised after this statement starts keeps dirty=1 for the next tick.
  */
 export function consumeDispatch(name: DispatchName): boolean {
-  const row = db
+  const res = db
     .prepare(
-      `SELECT dirty FROM dispatch_signals WHERE name = ?`,
+      `UPDATE dispatch_signals SET dirty=0, updated_at=? WHERE name=? AND dirty=1`,
     )
-    .get(name) as { dirty: number } | undefined;
-  if (!row || !row.dirty) return false;
-  db.prepare(`UPDATE dispatch_signals SET dirty=0, updated_at=? WHERE name=?`)
     .run(Date.now(), name);
-  return true;
+  return res.changes > 0;
 }

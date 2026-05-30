@@ -10,6 +10,9 @@ import { log } from "../shared/logger";
 import { consumeDispatch } from "./dispatch";
 import { activeRepos } from "../repo-store";
 import { tickScheduler } from "../cron/scheduler";
+import { pruneCronRuns } from "../cron/store";
+import { dayBudgetOk, issueBudgetOk } from "./budget";
+import { ACTIVE_STATUSES } from "../shared/statuses";
 
 const POLL_INTERVAL_MS = 60_000;
 const REVIEWER_INTERVAL_MS = botConfig.reviewer.intervalMinutes * 60_000;
@@ -26,18 +29,11 @@ function inFlightKey(repo: string, issueNumber: number) {
   return `${repo}#${issueNumber}`;
 }
 
-// QA1: ACTIVE statuses are an ALLOWLIST. The previous denylist
-// (`status NOT IN (...)`) would treat any new status (e.g. "cancelled")
-// as still-active and silently block re-runs forever. An allowlist
-// fails closed — a typo becomes "we'll re-run this", not "we'll never
-// touch it again".
-const ACTIVE_STATUSES = [
-  "queued",
-  "planning",
-  "implementing",
-  "iterating",
-  "verifying",
-] as const;
+// QA3: in-memory budget reservation. Each launched run reserves its per-run
+// cap; the reservation is released in the run's `.finally`. dayBudgetOk reads
+// this so concurrent launches in a single poll tick — whose costs aren't
+// written to the DB until the runs progress — can't all bypass the day cap.
+let reservedSpendUsd = 0;
 
 async function pollOnce() {
   for (const repoCfg of activeRepos()) {
@@ -90,7 +86,34 @@ async function pollOnce() {
         continue;
       }
 
+      // QA3 (R3 findings 15/16): gate on budget HERE, before we add to
+      // inFlight + fire-and-forget. Two wins:
+      //  - An over-budget issue never occupies an inFlight slot, so it can't
+      //    DoS-loop the poller (it just gets skipped with `continue`).
+      //  - `reservedSpendUsd` reserves the per-run cap for each launched run
+      //    so multiple launches in one tick don't all read the same pre-run
+      //    DB total and collectively bust the day cap (the cost is only
+      //    written to the DB during the run).
+      const day = dayBudgetOk(reservedSpendUsd);
+      if (!day.ok) {
+        log.warn(
+          "coord",
+          `daily budget exceeded ($${day.spentUsd.toFixed(2)} + $${reservedSpendUsd.toFixed(2)} reserved) — deferring pickups this tick`,
+        );
+        return;
+      }
+      const issueBudget = issueBudgetOk(repoFull, issue.number);
+      if (!issueBudget.ok) {
+        log.warn(
+          "coord",
+          `per-issue budget exceeded for ${repoFull}#${issue.number}: ` +
+            `$${issueBudget.spentUsd.toFixed(2)} across ${issueBudget.priorRuns} run(s) — skipping`,
+        );
+        continue;
+      }
+
       inFlight.add(key);
+      reservedSpendUsd += botConfig.budgets.perRunUsd;
       // Fire and forget — drain via the .finally so the concurrency cap stays
       // honest even if the implementer throws.
       runImplementer({
@@ -108,7 +131,13 @@ async function pollOnce() {
         .catch((err) =>
           log.error("coord", `implementer threw on ${key}: ${err}`),
         )
-        .finally(() => inFlight.delete(key));
+        .finally(() => {
+          inFlight.delete(key);
+          reservedSpendUsd = Math.max(
+            0,
+            reservedSpendUsd - botConfig.budgets.perRunUsd,
+          );
+        });
     }
   }
 }
@@ -172,6 +201,14 @@ async function main() {
       reapOrphans(dir).catch((err) =>
         log.error("coord", `reap error (${dir}): ${err}`),
       );
+    }
+    // QA3 (R3 finding 7): prune old cron history so a high-frequency cron
+    // can't grow the DB unbounded.
+    try {
+      const pruned = pruneCronRuns();
+      if (pruned) log.info("coord", `pruned ${pruned} old cron_runs row(s)`);
+    } catch (err) {
+      log.warn("coord", `cron prune error: ${err}`);
     }
   }, 6 * 60 * 60_000);
 

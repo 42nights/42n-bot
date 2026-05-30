@@ -132,10 +132,24 @@ export async function ensureLocalClone(repoId: number): Promise<{
   if (appConfigured()) {
     const installId = installationIdForRepo(repo.owner, repo.name);
     if (installId) {
+      // QA3 (R3 finding 18): for an App-bound repo, one retry then a HARD
+      // error. Silently falling back to the PAT here would clone with a
+      // token that may lack permissions on this repo — a confusing partial
+      // success. The PAT fallback below is only for repos with no
+      // installation (PAT-connected repos), not for App-bound ones.
       try {
         token = await tokenForInstallation(installId);
-      } catch (err) {
-        log.warn("clone", `installation token mint failed: ${err}`);
+      } catch (err1) {
+        log.warn("clone", `installation token mint failed, retrying: ${err1}`);
+        await new Promise((r) => setTimeout(r, 1000));
+        try {
+          token = await tokenForInstallation(installId);
+        } catch (err2) {
+          return {
+            ok: false,
+            error: `Could not mint an installation token for ${repo.owner}/${repo.name} (App-bound repo): ${err2 instanceof Error ? err2.message : String(err2)}`,
+          };
+        }
       }
     }
   }

@@ -23,6 +23,17 @@ export async function GET(
     return new Response("bad id", { status: 400 });
   }
 
+  // QA3 (R3 finding 21): 404 immediately for a non-existent run instead of
+  // opening a stream that polls an empty table forever while the client
+  // reconnects every 2s. The run row is always created before its events,
+  // so a missing row means a bad URL.
+  const exists = db
+    .prepare(`SELECT 1 FROM runs WHERE id = ?`)
+    .get(runId) as { 1: number } | undefined;
+  if (!exists) {
+    return new Response("run not found", { status: 404 });
+  }
+
   const encoder = new TextEncoder();
 
   // QA2: hoist the timers so EVERY teardown path (terminal status, client

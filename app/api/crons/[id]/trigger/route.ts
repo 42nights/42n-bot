@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ensureSchema } from "@/src/db/migrate";
-import { getCron, markCronFired } from "@/src/cron/store";
+import { getCron, recordCronRun } from "@/src/cron/store";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -33,7 +33,7 @@ export async function POST(
     return NextResponse.json({ ok: true, fired: result.fired });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    markCronFired(cron.id, { ok: false, message });
+    recordCronRun(cron.id, { ok: false, message });
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

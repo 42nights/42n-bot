@@ -5,6 +5,7 @@ import { randomBytes } from "node:crypto";
 import { botConfig } from "../../bot.config";
 import { db } from "../db";
 import { log } from "../shared/logger";
+import { ACTIVE_STATUSES } from "../shared/statuses";
 
 /**
  * Crashed git operations (worktree add, push, fetch) sometimes leave lock
@@ -132,12 +133,15 @@ export async function recoverCrashedRuns(repoDir: string) {
     .all(repoDir) as Array<{ owner: string; name: string }>;
   const repoKeys = new Set(reposForDir.map((r) => `${r.owner}/${r.name}`));
 
+  // QA3 (R3 finding 20): use the shared ACTIVE_STATUSES so this can't drift
+  // from the coordinator's list and orphan crashed runs in a new status.
+  const ph = ACTIVE_STATUSES.map(() => "?").join(",");
   const active = db
     .prepare(
       `SELECT id, worktree_path, repo, issue_number, branch_name FROM runs
-         WHERE status IN ('queued','planning','implementing','verifying','iterating')`,
+         WHERE status IN (${ph})`,
     )
-    .all() as Array<{
+    .all(...ACTIVE_STATUSES) as Array<{
     id: number;
     worktree_path: string | null;
     repo: string;

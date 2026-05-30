@@ -62,8 +62,25 @@ export async function checkMutationLight(
     };
   }
 
+  // QA3 (R3 finding 4): a failed `git checkout stash@{0} -- <file>` (e.g. the
+  // test file doesn't exist in the stash because it was deleted in the diff)
+  // used to be ignored — runCmd never throws and the exit code went
+  // unchecked. We then ran the pre-tests against a corrupted tree and
+  // produced meaningless results. Restore the stash and hard-fail if any
+  // checkout fails.
   for (const t of testFiles) {
-    await runCmd(["git", "checkout", "stash@{0}", "--", t], cwd);
+    const restore = await runCmd(["git", "checkout", "stash@{0}", "--", t], cwd);
+    if (restore.exitCode !== 0) {
+      // Best-effort: pop the stash to leave the tree as we found it.
+      await runCmd(["git", "stash", "pop"], cwd).catch(() => {});
+      return {
+        name: "mutation_light",
+        pass: false,
+        hardGate: true,
+        message: `Could not restore test file "${t}" from stash for the mutation check (it may have been deleted in the diff).`,
+        detail: { restoreStderr: restore.stderr },
+      };
+    }
   }
   const pre = await runCmd(cmd, cwd, 600_000);
 

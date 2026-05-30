@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { ensureSchema } from "@/src/db/migrate";
 import { verifyGitHubSignature, type GitHubEvent } from "@/src/github/webhook";
+import { readWebhookSecret } from "@/src/github/app";
 import { log } from "@/src/shared/logger";
 import { db } from "@/src/db";
 import { requestDispatch } from "@/src/coordinator/dispatch";
@@ -24,9 +25,11 @@ export const runtime = "nodejs";
 export async function POST(req: NextRequest) {
   ensureSchema();
   const raw = await req.text();
-  const secret = process.env.GITHUB_WEBHOOK_SECRET;
+  // QA3 (R3 finding 10): read the secret from the App credentials (manifest
+  // flow) first, falling back to the env var for the PAT/manual path.
+  const secret = readWebhookSecret();
   if (!secret) {
-    return new Response("GITHUB_WEBHOOK_SECRET not set", { status: 500 });
+    return new Response("no webhook secret configured", { status: 500 });
   }
   const signature = req.headers.get("x-hub-signature-256") ?? "";
   const eventName = req.headers.get("x-github-event") ?? "";
@@ -35,6 +38,22 @@ export async function POST(req: NextRequest) {
   if (!verifyGitHubSignature(raw, signature, secret)) {
     log.warn("webhook", `signature reject (event=${eventName})`);
     return new Response("forbidden", { status: 403 });
+  }
+
+  // QA3 (R3 finding 23): replay protection. GitHub may redeliver, and a
+  // captured-and-replayed delivery would otherwise double-process (double
+  // dispatch, duplicate pr.merged). Dedupe on the delivery id we already
+  // persist in the audit event payload.
+  if (deliveryId) {
+    const seen = db
+      .prepare(
+        `SELECT 1 FROM events WHERE run_id = 0 AND payload_json LIKE ? LIMIT 1`,
+      )
+      .get(`%"deliveryId":"${deliveryId}"%`) as { 1: number } | undefined;
+    if (seen) {
+      log.info("webhook", `duplicate delivery ${deliveryId} — ignoring`);
+      return new Response("duplicate", { status: 200 });
+    }
   }
 
   let payload: GitHubEvent;

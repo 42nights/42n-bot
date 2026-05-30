@@ -49,4 +49,21 @@ describe("extractJson", () => {
   it("returns undefined when JSON is unbalanced", () => {
     expect(extractJson("{not closed")).toBeUndefined();
   });
+
+  // QA3 (R3 finding 12) regressions:
+  it("prefers the FIRST valid JSON over a later fenced block", () => {
+    expect(
+      extractJson('{"correct":1}\n```\nContains {"fake":2}\n```'),
+    ).toEqual({ correct: 1 });
+  });
+
+  it("skips prose containing brace-placeholders and finds the real JSON", () => {
+    expect(
+      extractJson('Use the `{placeholder}` syntax. Then: {"real":true}'),
+    ).toEqual({ real: true });
+  });
+
+  it("still finds JSON inside a fence when there is no bare JSON first", () => {
+    expect(extractJson('Here:\n```json\n{"v":5}\n```')).toEqual({ v: 5 });
+  });
 });

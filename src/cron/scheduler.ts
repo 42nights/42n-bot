@@ -9,7 +9,8 @@ import { botConfig } from "../../bot.config";
 import { requestDispatch } from "../coordinator/dispatch";
 import {
   dueCrons,
-  markCronFired,
+  claimDueCron,
+  recordCronRun,
   type CronRow,
 } from "./store";
 
@@ -30,9 +31,15 @@ import {
 const MAX_CONCURRENT_REVIEWER_CRONS = 1;
 
 async function fireAndRecord(cron: CronRow): Promise<boolean> {
+  // QA3 (R3 finding 6): atomically claim before firing. If another process
+  // (dashboard vs coordinator) already claimed this cron, claimDueCron
+  // returns false and we skip — no double-fire.
+  if (!claimDueCron(cron)) {
+    return false;
+  }
   try {
     const result = await fireCron(cron);
-    markCronFired({ id: cron.id, schedule: cron.schedule }, result);
+    recordCronRun(cron.id, result);
     log.info(
       "cron",
       `fired #${cron.id} (${cron.name}): ${result.ok ? "ok" : "failed"} — ${result.message.slice(0, 200)}`,
@@ -40,10 +47,7 @@ async function fireAndRecord(cron: CronRow): Promise<boolean> {
     return true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    markCronFired(
-      { id: cron.id, schedule: cron.schedule },
-      { ok: false, message: msg },
-    );
+    recordCronRun(cron.id, { ok: false, message: msg });
     log.error("cron", `cron #${cron.id} threw: ${msg}`);
     return false;
   }

@@ -3,14 +3,21 @@ import { botConfig } from "../../bot.config";
 
 /**
  * Per-day budget: refuse new implementer runs once daily spend exceeds the cap.
+ *
+ * QA3: `reservedUsd` is the coordinator's in-memory reservation for runs that
+ * have been launched this poll cycle but haven't written their cost to the DB
+ * yet. Counting it prevents several concurrent launches in one tick from all
+ * reading the same stale DB total and collectively busting the cap.
  */
-export function dayBudgetOk(): { ok: true } | { ok: false; spentUsd: number } {
+export function dayBudgetOk(
+  reservedUsd = 0,
+): { ok: true } | { ok: false; spentUsd: number } {
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
   const row = db
     .prepare(`SELECT COALESCE(SUM(cost_usd), 0) AS spent FROM runs WHERE started_at >= ?`)
     .get(startOfDay.getTime()) as { spent: number };
-  if (row.spent >= botConfig.budgets.perDayUsd) {
+  if (row.spent + reservedUsd >= botConfig.budgets.perDayUsd) {
     return { ok: false, spentUsd: row.spent };
   }
   return { ok: true };

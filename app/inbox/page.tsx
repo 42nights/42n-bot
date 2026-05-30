@@ -142,6 +142,21 @@ function QueueTab() {
   async function fixIt(issue: Issue) {
     const key = `${issue.repo}#${issue.number}`;
     setFixing(key);
+    // QA3 (R3 finding 22): optimistic update with rollback. Mark the issue
+    // as queued locally so the card transitions immediately and a 5s SWR
+    // poll landing mid-request can't flash it back to "not started". The
+    // `false` arg means "don't revalidate yet" — we control the data.
+    const optimistic: IssuesResponse | undefined = data
+      ? {
+          ...data,
+          issues: data.issues.map((i) =>
+            i.repo === issue.repo && i.number === issue.number
+              ? { ...i, run_status: "queued" }
+              : i,
+          ),
+        }
+      : undefined;
+    if (optimistic) mutate(optimistic, false);
     try {
       const res = await fetch("/api/issues/fix", {
         method: "POST",
@@ -155,9 +170,10 @@ function QueueTab() {
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? `${res.status}`);
       toast.success(`Queued — ${issue.repo}#${issue.number}`);
-      mutate();
+      mutate(); // revalidate from the server now that it's committed
     } catch (err) {
       toast.error((err as Error).message);
+      if (data) mutate(data, false); // roll back to pre-click state
     } finally {
       setFixing(null);
     }

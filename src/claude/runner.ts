@@ -80,6 +80,17 @@ const ClaudeJsonResultSchema = z
   .passthrough();
 
 /**
+ * QA3 (R3 finding 13): pull `total_cost_usd` out of raw CLI stdout with a
+ * regex when the JSON didn't parse. Best-effort — returns 0 if not found.
+ */
+function scrapeCostFromStdout(stdout: string): number {
+  const m = stdout.match(/"total_cost_usd"\s*:\s*([0-9]+(?:\.[0-9]+)?)/);
+  if (!m) return 0;
+  const v = Number(m[1]);
+  return Number.isFinite(v) ? v : 0;
+}
+
+/**
  * Spawn a Claude Code subprocess with bot-safe defaults and stream-json
  * parsing. The wrapper owns:
  *  - process lifecycle + hard SIGKILL on timeout
@@ -175,35 +186,64 @@ export async function runClaudeCode(opts: ClaudeRunOptions): Promise<ClaudeRunRe
 
   let buf = "";
   let lastToolEmitted = 0;
+  const consume = (line: string) => {
+    consumeStreamLine(line, sink);
+    // Emit a dashboard-visible event whenever we observe a new tool_use —
+    // but throttle by comparing against the last emission timestamp so a
+    // burst of content_block_starts doesn't flood the events table.
+    if (sink.lastToolUseAt > lastToolEmitted) {
+      lastToolEmitted = sink.lastToolUseAt;
+      emitEvent(opts.runId, "implement.tool_use", {
+        mode: opts.mode,
+        tool: sink.lastToolName ?? "unknown",
+        // `input` may be undefined when the tool_use first arrived via a
+        // partial content_block_start (before the assistant turn-boundary).
+        // The narration translator falls back gracefully when it's missing.
+        input: sink.lastToolInput,
+      });
+    }
+  };
   child.stdout?.on("data", async (chunk: Buffer | string) => {
-    const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-    await stdoutFh.write(text);
-    buf += text;
-    let nl: number;
-    while ((nl = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, nl);
-      buf = buf.slice(nl + 1);
-      consumeStreamLine(line, sink);
-      // Emit a dashboard-visible event whenever we observe a new tool_use —
-      // but throttle by comparing against the last emission timestamp so a
-      // burst of content_block_starts doesn't flood the events table.
-      if (sink.lastToolUseAt > lastToolEmitted) {
-        lastToolEmitted = sink.lastToolUseAt;
-        emitEvent(opts.runId, "implement.tool_use", {
-          mode: opts.mode,
-          tool: sink.lastToolName ?? "unknown",
-          // `input` may be undefined when the tool_use first arrived via a
-          // partial content_block_start (before the assistant turn-boundary).
-          // The narration translator falls back gracefully when it's missing.
-          input: sink.lastToolInput,
-        });
+    // QA3 (R3 finding 19): wrap the file write so a disk-full / closed-handle
+    // rejection doesn't become an unhandled promise rejection that crashes
+    // the process. Parsing continues regardless — the transcript file is a
+    // debugging convenience, not load-bearing.
+    try {
+      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      await stdoutFh.write(text);
+      buf += text;
+      let nl: number;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        consume(line);
       }
+    } catch (err) {
+      log.warn("claude", `stdout handler error: ${err}`);
+    }
+  });
+
+  // QA3 (R3 finding 11): the CLI's final stdout line may not be newline-
+  // terminated. Process whatever remains in `buf` on stream end, or the
+  // `result` event (cost + final text) can be silently dropped.
+  child.stdout?.on("end", () => {
+    if (buf.trim()) {
+      try {
+        consume(buf);
+      } catch {
+        /* ignore parse errors on the tail */
+      }
+      buf = "";
     }
   });
 
   child.stderr?.on("data", async (chunk: Buffer | string) => {
-    const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-    await stderrFh.write(text);
+    try {
+      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      await stderrFh.write(text);
+    } catch (err) {
+      log.warn("claude", `stderr handler error: ${err}`);
+    }
   });
 
   try {
@@ -327,6 +367,7 @@ export async function runStructuredPlan<T>(opts: {
         violation?: boolean;
       }
   > {
+    let rawStdout = "";
     try {
       const { stdout } = await execa(botConfig.claudeCode.bin, args, {
         cwd: opts.cwd,
@@ -334,6 +375,7 @@ export async function runStructuredPlan<T>(opts: {
         maxBuffer: 10 * 1024 * 1024,
         env: spawnEnv(),
       });
+      rawStdout = stdout;
       const parsed = ClaudeJsonResultSchema.parse(JSON.parse(stdout));
       const candidate = parsed.structured_output ?? parsed.result;
       const planResult = opts.schema.safeParse(candidate);
@@ -352,9 +394,13 @@ export async function runStructuredPlan<T>(opts: {
         sessionId: parsed.session_id ?? "",
       };
     } catch (err) {
+      // QA3 (R3 finding 13): the model already cost tokens even when its
+      // output won't JSON.parse. Best-effort scrape the cost out of the raw
+      // stdout so the run's budget accounting isn't silently $0.
       return {
         ok: false,
         error: err instanceof Error ? err.message : String(err),
+        partialCostUsd: scrapeCostFromStdout(rawStdout),
       };
     }
   }

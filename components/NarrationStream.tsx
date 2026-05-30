@@ -43,10 +43,15 @@ export function NarrationStream({
     let src: EventSource | null = null;
     let reconnect: ReturnType<typeof setTimeout> | null = null;
     let closed = false;
+    // QA3 (R3 finding 21): cap reconnects so a persistent error (e.g. the run
+    // was deleted and the endpoint 404s) can't loop every 2s forever.
+    let attempts = 0;
+    const MAX_ATTEMPTS = 6;
 
     const connect = () => {
       src = new EventSource(`/api/runs/${runId}/events`);
       src.onmessage = (ev) => {
+        attempts = 0; // a successful message resets the backoff budget
         try {
           const e = JSON.parse(ev.data) as EventRow;
           setEvents((prev) =>
@@ -63,6 +68,11 @@ export function NarrationStream({
       src.onerror = () => {
         if (closed) return;
         src?.close();
+        attempts += 1;
+        if (attempts > MAX_ATTEMPTS) {
+          closed = true;
+          return;
+        }
         reconnect = setTimeout(connect, 2000);
       };
     };

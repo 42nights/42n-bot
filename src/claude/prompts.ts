@@ -59,6 +59,27 @@ export const PLAN_JSON_SCHEMA = {
   ],
 } as const;
 
+/**
+ * QA3: the v2 plan schema, extended with `acceptance_test_paths`. This MUST
+ * be the schema passed to the CLI's `--json-schema` flag for v2 plan calls —
+ * if the original PLAN_JSON_SCHEMA is used, the CLI's structured output won't
+ * include `acceptance_test_paths`, so feature runs (which have no
+ * reproduction test) end up with an EMPTY acceptance-path list and the
+ * acceptance gate is silently skipped. That's the exact "features don't
+ * actually get verified" hole.
+ */
+export const PLAN_V2_JSON_SCHEMA = {
+  ...PLAN_JSON_SCHEMA,
+  properties: {
+    ...PLAN_JSON_SCHEMA.properties,
+    acceptance_test_paths: {
+      type: "array",
+      items: { type: "string" },
+    },
+  },
+  required: [...PLAN_JSON_SCHEMA.required, "acceptance_test_paths"],
+} as const;
+
 export function planPrompt(issue: IssueForPrompt, repoSummary: string): string {
   return `You are planning an implementation for the following issue. Do NOT write any code yet.
 
@@ -796,20 +817,7 @@ Rules:
   explicitly justify why in the plan's why field.
 
 Output ONLY the structured JSON below. Schema (extended with acceptance_test_paths):
-${JSON.stringify({
-  ...PLAN_JSON_SCHEMA,
-  properties: {
-    ...PLAN_JSON_SCHEMA.properties,
-    acceptance_test_paths: {
-      type: "array",
-      items: { type: "string" },
-    },
-  },
-  required: [
-    ...PLAN_JSON_SCHEMA.required,
-    "acceptance_test_paths",
-  ],
-})}`;
+${JSON.stringify(PLAN_V2_JSON_SCHEMA)}`;
 }
 
 // ── IMPLEMENT v2 — escape hatch ────────────────────────────────────────

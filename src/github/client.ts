@@ -91,20 +91,31 @@ export async function listLabeledIssues(args: {
   owner: string;
   repo: string;
   label: string;
+  cap?: number;
 }): Promise<IssueSummary[]> {
+  // QA3 (R3 finding 9): paginate. The previous single page of 50 silently
+  // dropped issues 51+, so a repo with many `bot-please` issues would leave
+  // the overflow unworked forever. Cap at 500 to bound the work.
+  const cap = args.cap ?? 500;
   const client = ghFor(args.owner, args.repo);
-  const res = await client.issues.listForRepo({
+  const out: IssueSummary[] = [];
+  const iterator = client.paginate.iterator(client.issues.listForRepo, {
     owner: args.owner,
     repo: args.repo,
     labels: args.label,
     state: "open",
     sort: "created",
     direction: "asc",
-    per_page: 50,
+    per_page: 100,
   });
-  return (res.data as RawIssue[])
-    .filter((i) => !i.pull_request)
-    .map(toSummary);
+  for await (const page of iterator) {
+    for (const i of page.data as RawIssue[]) {
+      if (i.pull_request) continue;
+      out.push(toSummary(i));
+      if (out.length >= cap) return out;
+    }
+  }
+  return out;
 }
 
 /**

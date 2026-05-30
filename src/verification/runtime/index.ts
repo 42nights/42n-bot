@@ -68,7 +68,9 @@ export async function checkRuntime(args: {
 
   // Run migration check before starting a server (migration may be independent).
   if (hasMigration) {
-    const migResult = await checkMigration({ cwd });
+    // QA3 (R3 finding 5): pass expectMigrations so "declared a migration but
+    // none found" hard-fails instead of silently passing.
+    const migResult = await checkMigration({ cwd, expectMigrations: true });
     detail.migration = migResult;
     if (!migResult.pass && !needsServer) {
       return {
