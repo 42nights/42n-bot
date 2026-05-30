@@ -16,7 +16,7 @@
     "seed:demo": "node --env-file=.env.local --import tsx scripts/seed-demo.ts",
     "bot": "npm run build:bot && node --env-file=.env.local dist/src/coordinator/index.js",
     "smoke": "npm run build:bot && node --env-file=.env.local dist/scripts/smoke-test.js",
-    "go": "concurrently --kill-others --names dash,bot --prefix-colors blue,magenta \"npm:dev\" \"npm:bot\""
+    "go": "concurrently --restart-tries 10 --restart-after 1500 --names dash,bot --prefix-colors blue,magenta \"npm:dev\" \"npm:bot\""
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

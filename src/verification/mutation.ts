@@ -48,6 +48,14 @@ export async function checkMutationLight(
   // B3: prefer targeted runs when the runner supports it.
   const cmd = hints.testFilesArgv ? hints.testFilesArgv(testFiles) : hints.test;
 
+  // Clear any intent-to-add markers (`git add -N`) left on new files by the
+  // diff-capture step earlier in the pipeline. `git stash --include-untracked`
+  // aborts with "Entry '<file>' not uptodate. Cannot merge." on a -N entry
+  // (an empty index blob that mismatches the real worktree content). A mixed
+  // reset unstages those markers; the working-tree changes (modified impl,
+  // untracked tests) are untouched, so the stash below captures them correctly.
+  await runCmd(["git", "reset", "-q"], cwd);
+
   const stash = await runCmd(
     ["git", "stash", "push", "--include-untracked", "-m", "42n-bot-mutation"],
     cwd,
