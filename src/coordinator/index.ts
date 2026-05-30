@@ -26,6 +26,19 @@ function inFlightKey(repo: string, issueNumber: number) {
   return `${repo}#${issueNumber}`;
 }
 
+// QA1: ACTIVE statuses are an ALLOWLIST. The previous denylist
+// (`status NOT IN (...)`) would treat any new status (e.g. "cancelled")
+// as still-active and silently block re-runs forever. An allowlist
+// fails closed — a typo becomes "we'll re-run this", not "we'll never
+// touch it again".
+const ACTIVE_STATUSES = [
+  "queued",
+  "planning",
+  "implementing",
+  "iterating",
+  "verifying",
+] as const;
+
 async function pollOnce() {
   for (const repoCfg of activeRepos()) {
     if (!repoCfg.enabled) continue;
@@ -41,12 +54,16 @@ async function pollOnce() {
       continue;
     }
     for (const issue of issues) {
+      // QA1: the cap previously used `break`, which exited only the inner
+      // (per-issue) loop and let the next repo blow past it. Three repos
+      // with 1 issue each could spawn 3 × MAX = 9 implementers. Using
+      // `return` ends the entire poll cycle — next tick (60s) re-checks.
       if (inFlight.size >= MAX_CONCURRENT_IMPLEMENTERS) {
         log.debug(
           "coord",
-          `concurrency cap reached (${inFlight.size}) — deferring #${issue.number}`,
+          `concurrency cap reached (${inFlight.size}) — deferring further pickups this tick`,
         );
-        break;
+        return;
       }
       const claimed = issue.labels.includes(botConfig.labels.claimed);
       if (claimed) continue;
@@ -54,11 +71,14 @@ async function pollOnce() {
       const key = inFlightKey(repoFull, issue.number);
       if (inFlight.has(key)) continue;
 
+      const placeholders = ACTIVE_STATUSES.map(() => "?").join(",");
       const existingRun = db
         .prepare(
-          `SELECT id FROM runs WHERE repo=? AND issue_number=? AND status NOT IN ('failed','abandoned','succeeded','pr-opened','needs-review')`,
+          `SELECT id FROM runs WHERE repo=? AND issue_number=? AND status IN (${placeholders})`,
         )
-        .get(repoFull, issue.number) as { id: number } | undefined;
+        .get(repoFull, issue.number, ...ACTIVE_STATUSES) as
+        | { id: number }
+        | undefined;
       if (existingRun) continue;
 
       const repoDir = repoCfg.repo_dir ?? process.env.REPO_DIR;

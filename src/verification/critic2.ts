@@ -21,11 +21,15 @@ export async function checkCriticV2(args: {
     });
 
     if (!result.ok) {
+      // QA1: a critic-infrastructure failure (CLI timeout, API down) used to
+      // silently pass. That meant a flaky network let every run ship without
+      // adjudication. Now we return pass=false (soft gate) so the verdict
+      // routes to needs-review with an explicit "critic was unreachable" tag.
       return {
         name: "critic_v2",
-        pass: true,
+        pass: false,
         hardGate: false,
-        message: `Critic v2 skipped: ${result.error.slice(0, 200)}`,
+        message: `Critic v2 unreachable: ${result.error.slice(0, 200)} — routing to needs-review.`,
       };
     }
 

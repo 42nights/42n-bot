@@ -24,22 +24,34 @@ export async function tickScheduler(): Promise<{ fired: number }> {
   const due = dueCrons(10);
   if (due.length === 0) return { fired: 0 };
 
-  let fired = 0;
-  for (const cron of due) {
-    try {
-      const result = await fireCron(cron);
-      markCronFired(cron.id, result);
-      log.info(
-        "cron",
-        `fired #${cron.id} (${cron.name}): ${result.ok ? "ok" : "failed"} — ${result.message.slice(0, 200)}`,
-      );
-      fired += 1;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      markCronFired(cron.id, { ok: false, message: msg });
-      log.error("cron", `cron #${cron.id} threw: ${msg}`);
-    }
-  }
+  // QA1: fire in parallel via allSettled so a slow `reviewer` (which can take
+  // several minutes) doesn't block a fast `send_otis` due in the same tick.
+  // Each cron's row is captured before fire so a concurrent delete doesn't
+  // race the history insert.
+  const results = await Promise.allSettled(
+    due.map(async (cron) => {
+      try {
+        const result = await fireCron(cron);
+        markCronFired({ id: cron.id, schedule: cron.schedule }, result);
+        log.info(
+          "cron",
+          `fired #${cron.id} (${cron.name}): ${result.ok ? "ok" : "failed"} — ${result.message.slice(0, 200)}`,
+        );
+        return true;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        markCronFired(
+          { id: cron.id, schedule: cron.schedule },
+          { ok: false, message: msg },
+        );
+        log.error("cron", `cron #${cron.id} threw: ${msg}`);
+        return false;
+      }
+    }),
+  );
+  const fired = results.filter(
+    (r) => r.status === "fulfilled" && r.value === true,
+  ).length;
   return { fired };
 }
 

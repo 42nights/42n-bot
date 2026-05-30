@@ -41,9 +41,24 @@ describe("checkPlanTestsAdded", () => {
     expect(r.pass).toBe(true);
   });
 
-  it("passes via suffix match (planner may give relative paths)", () => {
-    const r = checkPlanTestsAdded(["src/foo.ts", "test/foo.test.ts", "packages/x/test/bar.test.ts"], samplePlan);
+  it("passes only on exact normalized path match", () => {
+    // QA1: previous behavior false-passed via suffix match — a test at
+    // packages/x/test/bar.test.ts was accepted when the plan declared
+    // test/bar.test.ts. Now we require exact match (after stripping a
+    // leading "./") so a test in the wrong directory fails this check.
+    const r = checkPlanTestsAdded(
+      ["src/foo.ts", "./test/foo.test.ts", "test/bar.test.ts"],
+      samplePlan,
+    );
     expect(r.pass).toBe(true);
+  });
+
+  it("fails when a planned test lives at a different path (no suffix false-pass)", () => {
+    const r = checkPlanTestsAdded(
+      ["src/foo.ts", "test/foo.test.ts", "packages/x/test/bar.test.ts"],
+      samplePlan,
+    );
+    expect(r.pass).toBe(false);
   });
 
   it("fails when planned test file is missing", () => {

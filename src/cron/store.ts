@@ -170,32 +170,53 @@ export function dueCrons(limit = 10): CronRow[] {
     .all(Date.now(), limit) as CronRow[];
 }
 
+/**
+ * Record that a cron fired. Accepts the full row (avoids a re-read + race
+ * where the row could be deleted between scheduler-read and history-insert)
+ * OR an id-and-schedule pair for the manual-trigger path.
+ *
+ * Wrapped in a transaction so we never advance `next_run_at` without also
+ * inserting the cron_runs history row — the bug otherwise was an "invisible
+ * fire" where the schedule moved forward but no history was recorded.
+ */
 export function markCronFired(
-  id: number,
+  cronOrId: number | { id: number; schedule: string },
   result: {
     ok: boolean;
     message: string;
     runId?: number;
   },
 ): void {
-  const cron = getCron(id);
-  if (!cron) return;
+  let id: number;
+  let schedule: string | null;
+  if (typeof cronOrId === "number") {
+    const row = getCron(cronOrId);
+    if (!row) return;
+    id = row.id;
+    schedule = row.schedule;
+  } else {
+    id = cronOrId.id;
+    schedule = cronOrId.schedule;
+  }
   const now = Date.now();
-  const next = nextFireAt(cron.schedule, now);
-  db.prepare(
-    `UPDATE crons SET last_run_at = ?, next_run_at = ?, updated_at = ? WHERE id = ?`,
-  ).run(now, next, now, id);
-  db.prepare(
-    `INSERT INTO cron_runs (cron_id, started_at, finished_at, ok, message, run_id)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(
-    id,
-    now,
-    now,
-    result.ok ? 1 : 0,
-    result.message,
-    result.runId ?? null,
-  );
+  const next = nextFireAt(schedule, now);
+  const tx = db.transaction(() => {
+    db.prepare(
+      `UPDATE crons SET last_run_at = ?, next_run_at = ?, updated_at = ? WHERE id = ?`,
+    ).run(now, next, now, id);
+    db.prepare(
+      `INSERT INTO cron_runs (cron_id, started_at, finished_at, ok, message, run_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      id,
+      now,
+      now,
+      result.ok ? 1 : 0,
+      result.message,
+      result.runId ?? null,
+    );
+  });
+  tx();
 }
 
 export function listCronRuns(cronId: number, limit = 50): CronRunRow[] {

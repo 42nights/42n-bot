@@ -19,6 +19,7 @@ import type { IssueForPrompt } from "../claude/prompts";
 import type { Understanding, CriticV2Report } from "../claude/phases/types";
 import { emitEvent } from "../shared/events";
 import { db } from "../db";
+import { log } from "../shared/logger";
 
 export type RunVerificationArgs = {
   runId: number;
@@ -197,8 +198,22 @@ export async function runVerification(
     checks.existing_tests.message;
 
   let criticV2Report: CriticV2Report | undefined;
+  // Which critic actually adjudicated — read in the verdict computation so
+  // a silent fall-through can't mismark `activeCritic` as a skipped stub.
+  let activeCriticKey: "critic" | "critic_v2";
 
-  if (args.useCriticV2 && args.understanding) {
+  // We can only run critic v2 with an understanding (it needs acceptance
+  // criteria to adjudicate). If the caller asked for v2 without one, that's
+  // a programming error — fall back to v1 but log it loudly so it surfaces.
+  const wantV2 = args.useCriticV2 && args.understanding;
+  if (args.useCriticV2 && !args.understanding) {
+    log.warn(
+      "verify",
+      "useCriticV2=true but understanding is null — falling back to v1 critic",
+    );
+  }
+
+  if (wantV2) {
     const acceptanceCode =
       args.acceptancePaths && args.acceptancePaths.length > 0
         ? await readTestCode(args.cwd, args.acceptancePaths)
@@ -227,6 +242,7 @@ export async function runVerification(
     // Keep the v1 slot filled so existing consumers (PR body, dashboards)
     // don't crash. Marked as skipped.
     checks.critic = skipped("critic", "Replaced by critic_v2 for this run.");
+    activeCriticKey = "critic_v2";
   } else {
     checks.critic_v2 = skipped(
       "critic_v2",
@@ -240,6 +256,7 @@ export async function runVerification(
         newTestOutput,
       }),
     );
+    activeCriticKey = "critic";
   }
 
   // ── Verdict ──────────────────────────────────────────────────────────
@@ -250,10 +267,11 @@ export async function runVerification(
     (c) => !c.hardGate && !c.pass,
   );
 
-  // Pass requires no hard-gate failures + the active critic passing.
-  const activeCritic = args.useCriticV2 && args.understanding
-    ? checks.critic_v2
-    : checks.critic;
+  // Pass requires no hard-gate failures + the critic that ACTUALLY ran
+  // passing. Reading `checks[activeCriticKey]` instead of recomputing the
+  // branch closes the silent-bypass hole (when wantV2 was true but the v2
+  // critic was skipped due to infra failure, it should NOT count as pass).
+  const activeCritic = checks[activeCriticKey];
   const pass = hardFailures.length === 0 && activeCritic.pass !== false;
 
   const failureSummary = pass

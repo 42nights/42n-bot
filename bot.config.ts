@@ -83,14 +83,16 @@ export const botConfig = {
     "Bash(mkdir *)",
     "Bash(rm -f *)",
 
-    // Runtime smoke (local only — for v2 runtime verification phase)
+    // Runtime smoke (LOCAL ONLY — for v2 runtime verification phase).
+    // Globs intentionally constrain the host. NEVER add `curl -s *` or
+    // `curl https://*` — both let the model exfiltrate to arbitrary hosts.
+    // NEVER add `sqlite3 data/* *` — gives arbitrary SQL on the bot's own DB.
     "Bash(curl http://localhost:* *)",
     "Bash(curl http://127.0.0.1:* *)",
     "Bash(curl -X * http://localhost:* *)",
     "Bash(curl -X * http://127.0.0.1:* *)",
-    "Bash(curl -s *)",
-    "Bash(curl -i *)",
-    "Bash(sqlite3 data/* *)",
+    "Bash(curl -i http://localhost:* *)",
+    "Bash(curl -i http://127.0.0.1:* *)",
   ] as string[],
 
   claudeCode: {

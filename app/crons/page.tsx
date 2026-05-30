@@ -519,31 +519,23 @@ function CronModal({
     }
     debounceRef.current = setTimeout(async () => {
       try {
-        // Use the validate endpoint by checking the POST error path
-        const res = await fetch("/api/crons", {
+        // QA1: dedicated validate endpoint — no row created, no cleanup needed.
+        const res = await fetch("/api/crons/validate", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            name: "__validate__",
-            schedule,
-            action: "reviewer",
-            enabled: false,
-          }),
+          body: JSON.stringify({ schedule }),
         });
-        if (res.ok) {
-          const body = (await res.json()) as { cron: CronRow };
-          // Clean up the test cron
-          fetch(`/api/crons/${body.cron.id}`, { method: "DELETE" }).catch(
-            () => {},
-          );
-          if (body.cron.next_run_at) {
-            setScheduleHint(
-              `Next: ${new Date(body.cron.next_run_at).toLocaleString()}`,
-            );
-          }
+        const body = (await res.json()) as {
+          ok?: boolean;
+          error?: string;
+          nextRun?: number;
+        };
+        if (body.ok && body.nextRun) {
+          setScheduleHint(`Next: ${new Date(body.nextRun).toLocaleString()}`);
+        } else if (body.error) {
+          setScheduleHint(`Invalid: ${body.error}`);
         } else {
-          const body = (await res.json()) as { error?: string };
-          setScheduleHint(body.error ? `Invalid: ${body.error}` : "Invalid schedule");
+          setScheduleHint("Invalid schedule");
         }
       } catch {
         setScheduleHint(null);

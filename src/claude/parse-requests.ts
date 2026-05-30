@@ -73,6 +73,11 @@ export function parseImplementerRequests(streamText: string): ImplementerRequest
     if (obj.needs_plan_revision === true) {
       const discovered =
         typeof obj.discovered === "string" ? obj.discovered : "";
+      // QA1: reject empty / trivial discoveries. Without this, an implementer
+      // that wants to delay actually doing the work can emit
+      // `{"needs_plan_revision":true,"discovered":""}` and burn a replan
+      // budget unit for free. Require at least a short substantive sentence.
+      if (discovered.trim().length < 8) continue;
       const suggestedNewFiles = Array.isArray(obj.suggested_new_files)
         ? (obj.suggested_new_files as unknown[]).filter(
             (x): x is string => typeof x === "string",

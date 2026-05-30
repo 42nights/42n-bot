@@ -43,11 +43,27 @@ async function tokenForInstallation(installationId: number): Promise<string> {
   return auth.token;
 }
 
+/**
+ * GitHub login + repo-name character set. Validated before building any URL
+ * so a row injection (or compromised webhook) can't redirect the clone to a
+ * different host via "/" or "@" smuggling.
+ */
+const GH_NAME_RE = /^[A-Za-z0-9_.-]{1,100}$/;
+
+export function isSafeGitHubName(s: string): boolean {
+  return GH_NAME_RE.test(s);
+}
+
 function cloneUrlFor(args: {
   owner: string;
   name: string;
   token: string | null;
 }): string {
+  if (!isSafeGitHubName(args.owner) || !isSafeGitHubName(args.name)) {
+    throw new Error(
+      `Refused to construct clone URL: owner/name failed validation`,
+    );
+  }
   if (args.token) {
     return `https://x-access-token:${args.token}@github.com/${args.owner}/${args.name}.git`;
   }

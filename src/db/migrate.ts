@@ -37,8 +37,16 @@ function hasColumn(table: string, column: string): boolean {
 }
 
 function addColumnIfMissing(table: string, column: string, ddl: string) {
-  if (!hasColumn(table, column)) {
+  if (hasColumn(table, column)) return;
+  try {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+  } catch (err) {
+    // QA1: Next.js HMR can reload this module while a request is in flight
+    // and both will pass `hasColumn` before either runs the ALTER. SQLite
+    // serializes writes, so the loser gets a "duplicate column name" error.
+    // Swallow that one specific error — anything else, re-throw.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/duplicate column name/i.test(msg)) throw err;
   }
 }
 

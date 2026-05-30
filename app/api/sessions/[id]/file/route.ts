@@ -74,9 +74,32 @@ export async function GET(
     return NextResponse.json({ error: "no worktree" }, { status: 404 });
   }
 
-  // Safety: prevent path traversal
-  const resolved = path.resolve(baseDir, filePath.replace(/^\//, ""));
-  if (!resolved.startsWith(path.resolve(baseDir))) {
+  // QA1: path-traversal protection with symlink safety.
+  // path.resolve() doesn't dereference symlinks — if `baseDir` itself is a
+  // symlink (worktree paths often are), `../` escapes via the symlink target
+  // were possible. fs.realpathSync resolves all symlinks before comparison.
+  // Also reject null-byte injection up front.
+  if (filePath.includes("\0") || filePath.length > 4096) {
+    return NextResponse.json({ error: "bad path" }, { status: 400 });
+  }
+  let realBase: string;
+  try {
+    realBase = fs.realpathSync(baseDir);
+  } catch {
+    return NextResponse.json({ error: "worktree gone" }, { status: 410 });
+  }
+  const requested = path.resolve(realBase, filePath.replace(/^\//, ""));
+  let resolved: string;
+  try {
+    // realpath the resolved path too. If it doesn't exist yet, normalize the
+    // parent and rejoin so we still get a symlink-resolved comparison.
+    resolved = fs.existsSync(requested)
+      ? fs.realpathSync(requested)
+      : path.join(fs.realpathSync(path.dirname(requested)), path.basename(requested));
+  } catch {
+    return NextResponse.json({ error: "file not found" }, { status: 404 });
+  }
+  if (!resolved.startsWith(realBase + path.sep) && resolved !== realBase) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
