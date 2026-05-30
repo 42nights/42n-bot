@@ -228,19 +228,41 @@ bot.config.ts             labels, budgets, intervals, policy
 
 ```
 test/
+├─ extract-json.test.ts       20  CLI JSON extraction: fences, prose, nested, mismatched, O(n) perf
+├─ narration.test.ts          15  Otis-voice translator across event kinds + coalescing
 ├─ stream.test.ts             12  ndjson parser: tool_use shapes, hang heuristics, cost capture
-├─ diff.test.ts                7  diff-size cap + plan-tests-added
-├─ pr-body.test.ts             6  template snapshots: passing run, needs-review with warnings
-├─ signature.test.ts           5  GitHub HMAC verify: tampered body, wrong secret, missing prefix
-├─ banned.test.ts              5  banned-pattern scan, false-positive guard
-├─ dedupe.test.ts              3  reviewer cosine-threshold dedupe (mocked router)
-├─ git-locks.test.ts           3  clearGitLocks idempotency + safe scope
-├─ extract-json.test.ts       10  CLI output: bare JSON, fences, prose-wrapping, nested braces
-├─ worktree-guard.test.ts      2  protected-ref refusal (main/master/trunk/develop)
+├─ security.test.ts          12  RCE / exfil / host-redirect rejection (isCommandSafe, isSafeGitHubName)
+├─ cron-store.test.ts        11  schedule validation, nextFireAt, payload size/shape guards
+├─ diff.test.ts               9  diff-size cap (incl. empty=0), plan-tests exact-match
+├─ pr-body.test.ts            6  template snapshots: passing run, needs-review with warnings
+├─ cron-fire-safety.test.ts   5  atomic claim + FK-safe history insert
+├─ signature.test.ts          5  GitHub HMAC verify: tampered body, wrong secret, missing prefix
+├─ banned.test.ts             5  banned-pattern scan, false-positive guard
+├─ understand-validate.test.ts 5  fabrication / ubiquitous-padding / sibling-escape detection
+├─ parse-requests.test.ts     4  implementer escape-hatch parser
+├─ dedupe.test.ts             3  reviewer cosine-threshold dedupe (mocked router)
+├─ git-locks.test.ts          3  clearGitLocks idempotency + safe scope
+├─ worktree-guard.test.ts     2  protected-ref refusal (main/master/trunk/develop)
 └─ verification-harness.test.ts 1  end-to-end harness on a real git repo
 ```
 
-`npm test` runs all 54 in under a second + one e2e in ~10s.
+`npm test` runs all 118 cases (117 unit in ~1s + one e2e in ~15s).
+
+### Hardening
+
+The codebase went through six rounds of adversarial multi-agent QA — each
+round fans specialized auditors across the subsystems, every finding is
+independently verified by a skeptic that tries to *refute* it, and only
+confirmed-real bugs are fixed. The confirmed-finding count converged
+23 → 5 → 9 → 1 across the rounds; the final round found no correctness or
+security bug in normal operation. Closed along the way: a schema bug that
+silently skipped the acceptance gate on feature runs, a reviewer-concurrency
+race that filed duplicate issues, command-injection and path-traversal
+surfaces in the runtime-verification + clone paths, a prompt-injection vector
+in the chat RAG, several SQLite atomicity/race holes, and an O(n²) JSON
+parser. Security-critical paths (webhook sign→dedup→replay, command
+allowlist, path-traversal guards) are covered by regression tests and were
+verified end-to-end against a live server.
 
 ## Why this architecture
 
