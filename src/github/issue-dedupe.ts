@@ -1,4 +1,4 @@
-import { embedBatch, EMBED_DIM } from "../embeddings/openai";
+import { embedBatch, activeEmbedDim } from "../embeddings";
 import { db } from "../db";
 
 /**
@@ -86,9 +86,11 @@ function textFor(title: string, body: string): string {
   return `${title}\n\n${body.slice(0, 500)}`;
 }
 
-function bufToVec(b: Buffer): Float32Array {
+function bufToVec(b: Buffer): Float32Array | null {
   const copy = Buffer.from(b);
-  return new Float32Array(copy.buffer, copy.byteOffset, EMBED_DIM);
+  const dim = activeEmbedDim();
+  if (copy.byteLength !== dim * 4) return null;
+  return new Float32Array(copy.buffer, copy.byteOffset, dim);
 }
 function vecToBuf(v: Float32Array): Buffer {
   return Buffer.from(v.buffer, v.byteOffset, v.byteLength);
@@ -108,7 +110,7 @@ function lookupCache(
     | undefined;
   if (!row) return null;
   if (row.updated_at !== updatedAt) return null;
-  return bufToVec(row.embedding);
+  return bufToVec(row.embedding);  // returns null on dim mismatch (e.g., user swapped backends)
 }
 
 function writeCache(

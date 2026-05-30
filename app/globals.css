@@ -2,50 +2,152 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --background: 0 0% 100%;
-  --foreground: 240 10% 4%;
-  --muted: 240 5% 96%;
-  --muted-foreground: 240 4% 38%;
-  --border: 240 6% 90%;
-  --primary: 252 80% 56%;
-  --primary-foreground: 0 0% 100%;
-  --destructive: 0 84% 50%;
-  --destructive-foreground: 0 0% 100%;
-  --success: 158 64% 38%;
-  --success-foreground: 0 0% 100%;
-  --warning: 36 92% 50%;
-  --warning-foreground: 0 0% 100%;
-  --radius: 10px;
+@layer base {
+  :root {
+    /* Light alternate — only when user explicitly opts in. */
+    --bg: oklch(99% 0.002 90);
+    --bg-elev: oklch(97% 0.003 90);
+    --bg-sunken: oklch(95% 0.004 90);
+    --fg: oklch(20% 0.01 60);
+    --fg-muted: oklch(48% 0.008 60);
+    --fg-subtle: oklch(62% 0.008 60);
+    --border: oklch(88% 0.005 60);
+    --border-strong: oklch(78% 0.006 60);
+
+    --accent: oklch(58% 0.16 145);
+    --accent-fg: oklch(98% 0.005 145);
+    --accent-soft: oklch(94% 0.05 145);
+
+    --plan: oklch(58% 0.14 290);
+    --plan-soft: oklch(94% 0.04 290);
+
+    --warn: oklch(72% 0.16 75);
+    --warn-soft: oklch(96% 0.05 75);
+
+    --fail: oklch(58% 0.20 25);
+    --fail-soft: oklch(96% 0.04 25);
+
+    --radius: 0.5rem;
+    --radius-lg: 0.875rem;
+    --radius-xl: 1.25rem;
+  }
+
+  .dark {
+    --bg: oklch(14% 0.006 60);
+    --bg-elev: oklch(17% 0.006 60);
+    --bg-sunken: oklch(11% 0.006 60);
+    --fg: oklch(96% 0.005 90);
+    --fg-muted: oklch(70% 0.008 60);
+    --fg-subtle: oklch(48% 0.008 60);
+    --border: oklch(24% 0.005 60);
+    --border-strong: oklch(34% 0.006 60);
+
+    --accent: oklch(74% 0.18 145);
+    --accent-fg: oklch(14% 0.01 145);
+    --accent-soft: oklch(28% 0.06 145);
+
+    --plan: oklch(72% 0.14 290);
+    --plan-soft: oklch(28% 0.05 290);
+
+    --warn: oklch(82% 0.14 75);
+    --warn-soft: oklch(28% 0.05 75);
+
+    --fail: oklch(72% 0.18 25);
+    --fail-soft: oklch(28% 0.06 25);
+  }
+
+  /* Back-compat shims — older components reference these. They all resolve
+     to the new token system so we can migrate incrementally. */
+  :root,
+  .dark {
+    --background: var(--bg);
+    --foreground: var(--fg);
+    --muted: var(--bg-sunken);
+    --muted-foreground: var(--fg-muted);
+    --border-color-token: var(--border);
+    --primary: var(--accent);
+    --primary-foreground: var(--accent-fg);
+    --destructive: var(--fail);
+    --destructive-foreground: var(--accent-fg);
+    --success: var(--accent);
+    --success-foreground: var(--accent-fg);
+    --warning: var(--warn);
+    --warning-foreground: var(--accent-fg);
+  }
+
+  html,
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-display), ui-sans-serif, system-ui, sans-serif;
+    font-feature-settings: "ss01", "cv11", "calt";
+    -webkit-font-smoothing: antialiased;
+  }
+
+  * {
+    border-color: var(--border);
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--accent) 30%, transparent);
+  }
 }
 
-html,
-body {
-  background: hsl(var(--background));
-  color: hsl(var(--foreground));
-  font-feature-settings: "ss01", "cv11";
+/* Backwards-compat: existing Tailwind utilities like bg-background still work
+   thanks to the shadcn-style hsl() wrappers. We override the resolution so
+   the same class targets our new tokens. */
+@layer utilities {
+  .bg-background { background-color: var(--bg) !important; }
+  .bg-muted { background-color: var(--bg-sunken) !important; }
+  .bg-foreground { background-color: var(--fg) !important; }
+  .text-foreground { color: var(--fg) !important; }
+  .text-background { color: var(--bg) !important; }
+  .text-muted-foreground { color: var(--fg-muted) !important; }
+  .border-border { border-color: var(--border) !important; }
 }
 
-* {
-  border-color: hsl(var(--border));
+/* The pulsing breathing dot that says "Otis is working". */
+@keyframes otis-breathe {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--accent) 55%, transparent),
+                0 0 0 0 color-mix(in oklab, var(--accent) 25%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in oklab, var(--accent) 40%, transparent),
+                0 0 0 8px color-mix(in oklab, var(--accent) 12%, transparent);
+  }
+}
+.otis-live-dot {
+  animation: otis-breathe 1.6s ease-in-out infinite;
 }
 
-::selection {
-  background: hsl(var(--primary) / 0.18);
+/* The thinking cursor at the end of an in-progress narration line. */
+@keyframes otis-cursor {
+  0%, 60% { opacity: 1; }
+  61%, 100% { opacity: 0; }
+}
+.otis-thinking-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  background: var(--accent);
+  vertical-align: text-bottom;
+  margin-left: 2px;
+  animation: otis-cursor 0.9s steps(2) infinite;
 }
 
-/* Diff syntax */
+/* Diff syntax — dark-mode friendly. */
 .diff-add {
-  background-color: rgba(46, 160, 67, 0.12);
-  color: #1a7f37;
+  background-color: color-mix(in oklab, var(--accent) 12%, transparent);
+  color: color-mix(in oklab, var(--accent) 80%, var(--fg));
 }
 .diff-del {
-  background-color: rgba(248, 81, 73, 0.12);
-  color: #cf222e;
+  background-color: color-mix(in oklab, var(--fail) 12%, transparent);
+  color: color-mix(in oklab, var(--fail) 80%, var(--fg));
 }
 .diff-hunk {
-  color: #6e7781;
-  background-color: #f6f8fa;
-  border-top: 1px solid hsl(var(--border));
-  border-bottom: 1px solid hsl(var(--border));
+  color: var(--fg-muted);
+  background-color: var(--bg-sunken);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
 }

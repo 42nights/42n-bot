@@ -1,10 +1,8 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import type { CheckResult, Plan } from "./types";
 import { CRITIC_JSON_SCHEMA, criticPrompt, type IssueForPrompt } from "../claude/prompts";
 import { botConfig } from "../../bot.config";
-
-const CRITIC_MODEL = "claude-haiku-4-5-20251001";
+import { runClaudeHeadless } from "../claude/headless";
 
 const ResponseSchema = z.object({
   implements_issue: z.enum(["yes", "partly", "no", "not-clear"]),
@@ -22,54 +20,33 @@ const ResponseSchema = z.object({
 
 export type CriticReport = z.infer<typeof ResponseSchema>;
 
-let _client: Anthropic | null = null;
-function client(): Anthropic {
-  if (!_client) {
-    _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY ?? "" });
-  }
-  return _client;
-}
-
 export async function checkCritic(args: {
   issue: IssueForPrompt;
   plan: Plan;
   diffText: string;
   newTestOutput: string;
 }): Promise<CheckResult & { report?: CriticReport }> {
-  if (!process.env.ANTHROPIC_API_KEY) {
+  const userPrompt = criticPrompt(args);
+  const systemAppend = `Output ONLY a single JSON object that conforms to this schema. No prose, no code fences, no explanation. Schema:
+${JSON.stringify(CRITIC_JSON_SCHEMA)}`;
+
+  const result = await runClaudeHeadless({
+    prompt: userPrompt,
+    systemPromptAppend: systemAppend,
+    timeoutMs: botConfig.claudeCode.criticTimeoutMs,
+    expectJson: true,
+  });
+
+  if (!result.ok) {
     return {
       name: "critic",
       pass: true,
       hardGate: false,
-      message: "ANTHROPIC_API_KEY missing — critic skipped.",
+      message: `Critic skipped: ${result.error.slice(0, 200)}`,
     };
   }
-  const prompt = criticPrompt(args);
-  const response = await client().messages.create({
-    model: CRITIC_MODEL,
-    max_tokens: 1500,
-    tool_choice: { type: "tool", name: "submit_review" },
-    tools: [
-      {
-        name: "submit_review",
-        description: "Submit the structured critic review.",
-        input_schema: CRITIC_JSON_SCHEMA as any,
-      },
-    ],
-    messages: [{ role: "user", content: prompt }],
-  });
-  const tool = response.content.find((b) => b.type === "tool_use") as
-    | { type: "tool_use"; input: unknown }
-    | undefined;
-  if (!tool) {
-    return {
-      name: "critic",
-      pass: false,
-      hardGate: false,
-      message: "Critic returned no tool call.",
-    };
-  }
-  const parsed = ResponseSchema.safeParse(tool.input);
+
+  const parsed = ResponseSchema.safeParse(result.json);
   if (!parsed.success) {
     return {
       name: "critic",
@@ -78,18 +55,19 @@ export async function checkCritic(args: {
       message: `Critic output schema mismatch: ${parsed.error.message}`,
     };
   }
+
   const report = parsed.data;
   const minConfidence = botConfig.verification.criticMinConfidence;
   const hasHighBug = report.hidden_bugs.some((b) => b.severity === "high");
   const implementsOk = report.implements_issue === "yes";
-  const pass = report.merge_confidence >= minConfidence && !hasHighBug && implementsOk;
+  const pass =
+    report.merge_confidence >= minConfidence && !hasHighBug && implementsOk;
+
   return {
     name: "critic",
     pass,
     hardGate: false,
-    message: pass
-      ? `Critic: ${report.merge_confidence}/100 — ${report.one_line_summary}`
-      : `Critic: ${report.merge_confidence}/100 — ${report.one_line_summary}`,
+    message: `Critic: ${report.merge_confidence}/100 — ${report.one_line_summary}`,
     detail: report,
     report,
   };

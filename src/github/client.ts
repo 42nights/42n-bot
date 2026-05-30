@@ -1,15 +1,33 @@
 import { Octokit } from "@octokit/rest";
 import { retry } from "@octokit/plugin-retry";
+import {
+  appConfigured,
+  ghInstallation,
+  installationIdForRepo,
+} from "./app";
 
 // B7: enable plugin-retry so a single 502/503/504 from GitHub doesn't drop
 // the whole run. Default policy is exponential backoff up to 3 retries on
 // 5xx; safe for everything we do (all our writes are idempotent).
 const OctokitWithRetry = Octokit.plugin(retry);
+export type RetryingOctokit = InstanceType<typeof OctokitWithRetry>;
 
-let _octokit: InstanceType<typeof OctokitWithRetry> | null = null;
-export function gh(): InstanceType<typeof OctokitWithRetry> {
+let _octokit: RetryingOctokit | null = null;
+
+/**
+ * Default Octokit, authed with PAT (`GITHUB_TOKEN`). Used:
+ *  - When the GitHub App isn't configured at all
+ *  - When a repo was connected via PAT (no installation_id stored)
+ *  - For ad-hoc API calls that don't have a repo context (e.g., probing on the
+ *    `connect` form before installation_id is known)
+ */
+export function gh(): RetryingOctokit {
   if (!process.env.GITHUB_TOKEN) {
-    throw new Error("GITHUB_TOKEN is not set");
+    throw new Error(
+      appConfigured()
+        ? "Repo has no installation_id and GITHUB_TOKEN is not set — install the GitHub App on this repo or set a PAT."
+        : "GITHUB_TOKEN is not set",
+    );
   }
   if (!_octokit) {
     _octokit = new OctokitWithRetry({
@@ -19,6 +37,18 @@ export function gh(): InstanceType<typeof OctokitWithRetry> {
     });
   }
   return _octokit;
+}
+
+/**
+ * Repo-scoped Octokit. Prefers an installation token when the repo was
+ * connected via the GitHub App; otherwise falls back to the PAT client.
+ */
+export function ghFor(owner: string, repo: string): RetryingOctokit {
+  if (appConfigured()) {
+    const installId = installationIdForRepo(owner, repo);
+    if (installId) return ghInstallation(installId);
+  }
+  return gh();
 }
 
 export type IssueSummary = {
@@ -62,7 +92,8 @@ export async function listLabeledIssues(args: {
   repo: string;
   label: string;
 }): Promise<IssueSummary[]> {
-  const res = await gh().issues.listForRepo({
+  const client = ghFor(args.owner, args.repo);
+  const res = await client.issues.listForRepo({
     owner: args.owner,
     repo: args.repo,
     labels: args.label,
@@ -88,7 +119,8 @@ export async function listAllOpenIssues(args: {
 }): Promise<IssueSummary[]> {
   const cap = args.cap ?? 500;
   const all: IssueSummary[] = [];
-  const iterator = gh().paginate.iterator(gh().issues.listForRepo, {
+  const client = ghFor(args.owner, args.repo);
+  const iterator = client.paginate.iterator(client.issues.listForRepo, {
     owner: args.owner,
     repo: args.repo,
     state: "open",
@@ -110,7 +142,7 @@ export async function addLabel(args: {
   issue_number: number;
   label: string;
 }) {
-  await gh().issues.addLabels({
+  await ghFor(args.owner, args.repo).issues.addLabels({
     owner: args.owner,
     repo: args.repo,
     issue_number: args.issue_number,
@@ -125,7 +157,7 @@ export async function removeLabel(args: {
   label: string;
 }) {
   try {
-    await gh().issues.removeLabel({
+    await ghFor(args.owner, args.repo).issues.removeLabel({
       owner: args.owner,
       repo: args.repo,
       issue_number: args.issue_number,
@@ -142,7 +174,7 @@ export async function commentOnIssue(args: {
   issue_number: number;
   body: string;
 }) {
-  await gh().issues.createComment({
+  await ghFor(args.owner, args.repo).issues.createComment({
     owner: args.owner,
     repo: args.repo,
     issue_number: args.issue_number,
@@ -159,7 +191,8 @@ export async function openPullRequest(args: {
   body: string;
   labels?: string[];
 }): Promise<{ number: number; url: string }> {
-  const created = await gh().pulls.create({
+  const client = ghFor(args.owner, args.repo);
+  const created = await client.pulls.create({
     owner: args.owner,
     repo: args.repo,
     head: args.head,
@@ -169,7 +202,7 @@ export async function openPullRequest(args: {
     draft: false,
   });
   if (args.labels?.length) {
-    await gh().issues.addLabels({
+    await client.issues.addLabels({
       owner: args.owner,
       repo: args.repo,
       issue_number: created.data.number,
@@ -186,7 +219,7 @@ export async function createBotIssue(args: {
   body: string;
   labels?: string[];
 }): Promise<{ number: number; url: string }> {
-  const created = await gh().issues.create({
+  const created = await ghFor(args.owner, args.repo).issues.create({
     owner: args.owner,
     repo: args.repo,
     title: args.title,

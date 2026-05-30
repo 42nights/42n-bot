@@ -1,16 +1,23 @@
 import type { Metadata } from "next";
-import { Inter, Crimson_Pro, JetBrains_Mono } from "next/font/google";
+import { GeistSans } from "geist/font/sans";
+import { GeistMono } from "geist/font/mono";
+import { Newsreader } from "next/font/google";
 import { Toaster } from "sonner";
 import { Shell } from "@/components/Shell";
+import { CommandPalette } from "@/components/CommandPalette";
 import "./globals.css";
 
-const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
-const crimson = Crimson_Pro({ subsets: ["latin"], variable: "--font-crimson" });
-const jb = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono" });
+const newsreader = Newsreader({
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  variable: "--font-serif",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
-  title: "42n-bot — autonomous coding agent",
-  description: "Issues → grounded PRs, overnight. Verification harness in front of every merge.",
+  title: "Otis — AI engineer at 42nights",
+  description:
+    "Otis reads issues. Writes PRs. Asks before doing anything risky.",
 };
 
 export default function RootLayout({
@@ -21,11 +28,21 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${inter.variable} ${crimson.variable} ${jb.variable}`}
+      // Dark by default. The .dark token set in globals.css activates here.
+      className={`dark ${GeistSans.variable} ${GeistMono.variable} ${newsreader.variable}`}
+      style={
+        {
+          // Map Geist's emitted CSS variables onto our generic display/mono
+          // family vars so the rest of the system stays font-agnostic.
+          "--font-display": "var(--font-geist-sans)",
+          "--font-mono-family": "var(--font-geist-mono)",
+        } as React.CSSProperties
+      }
     >
-      <body className="min-h-screen font-sans antialiased bg-[hsl(240,10%,99%)]">
+      <body className="min-h-screen antialiased bg-[var(--bg)] text-[var(--fg)]">
         <Shell>{children}</Shell>
-        <Toaster position="top-right" />
+        <Toaster position="top-right" theme="dark" />
+        <CommandPalette />
       </body>
     </html>
   );

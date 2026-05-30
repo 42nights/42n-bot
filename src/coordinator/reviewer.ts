@@ -66,10 +66,20 @@ export async function runReviewer(input: ReviewerInput): Promise<{
     timeoutMs: botConfig.claudeCode.defaultTimeoutMs,
   });
   if (!planRes.ok) {
+    log.warn(
+      "reviewer",
+      `${input.owner}/${input.repo}: planner failed: ${planRes.error.slice(0, 300)}`,
+    );
     db.prepare(
       `UPDATE runs SET status='failed', finished_at=?, error_message=? WHERE id=?`,
     ).run(Date.now(), planRes.error, runId);
     return { runId, proposed: 0, opened: 0, deduped: 0 };
+  }
+  if (planRes.plan.candidates.length === 0) {
+    log.info(
+      "reviewer",
+      `${input.owner}/${input.repo}: Claude returned 0 candidates (nothing worth filing)`,
+    );
   }
 
   db.prepare(`UPDATE runs SET cost_usd = cost_usd + ? WHERE id = ?`).run(

@@ -8,6 +8,7 @@ import { reapOrphans, recoverCrashedRuns } from "./worktree";
 import { listLabeledIssues } from "../github/client";
 import { log } from "../shared/logger";
 import { consumeDispatch } from "./dispatch";
+import { activeRepos } from "../repo-store";
 
 const POLL_INTERVAL_MS = 60_000;
 const REVIEWER_INTERVAL_MS = botConfig.reviewer.intervalMinutes * 60_000;
@@ -24,7 +25,7 @@ function inFlightKey(repo: string, issueNumber: number) {
 }
 
 async function pollOnce() {
-  for (const repoCfg of botConfig.repos) {
+  for (const repoCfg of activeRepos()) {
     if (!repoCfg.enabled) continue;
     let issues;
     try {
@@ -58,11 +59,11 @@ async function pollOnce() {
         .get(repoFull, issue.number) as { id: number } | undefined;
       if (existingRun) continue;
 
-      const repoDir = process.env.REPO_DIR;
+      const repoDir = repoCfg.repo_dir ?? process.env.REPO_DIR;
       if (!repoDir) {
         log.warn(
           "coord",
-          `REPO_DIR not set — cannot create worktree for ${repoFull}#${issue.number}`,
+          `${repoFull}: no local clone path set (add one on /repos, or set REPO_DIR) — skipping #${issue.number}`,
         );
         continue;
       }
@@ -92,9 +93,9 @@ async function pollOnce() {
 
 async function reviewerOnce() {
   if (!botConfig.reviewer.enabled) return;
-  for (const repoCfg of botConfig.repos) {
+  for (const repoCfg of activeRepos()) {
     if (!repoCfg.enabled) continue;
-    const repoDir = process.env.REPO_DIR;
+    const repoDir = repoCfg.repo_dir ?? process.env.REPO_DIR;
     if (!repoDir) continue;
     try {
       const result = await runReviewer({
@@ -112,13 +113,23 @@ async function reviewerOnce() {
   }
 }
 
+function uniqueRepoDirs(): string[] {
+  const dirs = new Set<string>();
+  for (const r of activeRepos()) {
+    const d = r.repo_dir ?? process.env.REPO_DIR;
+    if (d) dirs.add(d);
+  }
+  return Array.from(dirs);
+}
+
 async function main() {
   ensureSchema();
-  const repoDir = process.env.REPO_DIR;
-  if (repoDir) {
-    const recovered = await recoverCrashedRuns(repoDir);
-    if (recovered) log.info("coord", `recovered ${recovered} crashed run(s)`);
-    await reapOrphans(repoDir);
+  for (const dir of uniqueRepoDirs()) {
+    const recovered = await recoverCrashedRuns(dir).catch(() => 0);
+    if (recovered) log.info("coord", `recovered ${recovered} crashed run(s) in ${dir}`);
+    await reapOrphans(dir).catch((err) =>
+      log.warn("coord", `reapOrphans(${dir}) failed: ${err}`),
+    );
   }
 
   log.info("coord", "42n-bot coordinator started");
@@ -135,7 +146,11 @@ async function main() {
   }, REVIEWER_INTERVAL_MS);
 
   setInterval(() => {
-    if (repoDir) reapOrphans(repoDir).catch((err) => log.error("coord", `reap error: ${err}`));
+    for (const dir of uniqueRepoDirs()) {
+      reapOrphans(dir).catch((err) =>
+        log.error("coord", `reap error (${dir}): ${err}`),
+      );
+    }
   }, 6 * 60 * 60_000);
 
   // A3/B5: drain webhook-triggered dispatches on a tight tick.

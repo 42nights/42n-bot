@@ -1,66 +1,133 @@
 "use client";
 
+import { Suspense } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { Activity, ListChecks, MessagesSquare, Boxes, Settings } from "lucide-react";
+import { useActiveCount } from "@/lib/hooks";
+import { OtisMark } from "./icons/OtisMark";
+import { LiveDot } from "./icons/LiveDot";
+import { CommandHint } from "./CommandHint";
+import { RepoSelector } from "./RepoSelector";
 
+/**
+ * Layout chrome. The reactive bits (search params, live counts, repo
+ * scoping) hide behind a Suspense boundary so `/_not-found` and other static
+ * pages can still prerender — Next 16's prerender CSR-bailout otherwise.
+ */
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-
-  const nav = [
-    { href: "/", label: "Live", icon: Activity },
-    { href: "/runs", label: "Runs", icon: ListChecks },
-    { href: "/chat", label: "Chat", icon: MessagesSquare },
-    { href: "/repos", label: "Repos", icon: Boxes },
-    { href: "/settings", label: "Settings", icon: Settings },
-  ];
-
   return (
-    <div className="flex min-h-screen">
-      <aside className="w-60 shrink-0 border-r border-border bg-background/50 flex flex-col">
-        <div className="p-6 border-b border-border">
-          <Link href="/" className="block">
-            <div className="font-serif text-2xl tracking-tight flex items-baseline gap-1.5">
-              <span>42n</span>
-              <span className="text-[hsl(var(--primary))]">·</span>
-              <span className="font-mono text-base">bot</span>
-            </div>
-            <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground mt-0.5">
-              Autonomous coding agent
-            </div>
-          </Link>
-        </div>
-
-        <nav className="p-3 flex flex-col gap-0.5">
-          {nav.map(({ href, label, icon: Icon }) => {
-            const active =
-              pathname === href || (href !== "/" && pathname.startsWith(href));
-            return (
-              <Link
-                key={href}
-                href={href}
-                className={cn(
-                  "flex items-center gap-2.5 px-3 py-2 text-sm rounded-md transition-colors",
-                  active
-                    ? "bg-foreground text-background"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted",
-                )}
-              >
-                <Icon className="h-4 w-4" />
-                {label}
-              </Link>
-            );
-          })}
-        </nav>
-
-        <div className="mt-auto p-4 border-t border-border">
-          <div className="text-[11px] text-muted-foreground">
-            v0.1 · local
-          </div>
-        </div>
-      </aside>
+    <div className="min-h-screen flex flex-col">
+      <Suspense fallback={<TopBarSkeleton />}>
+        <TopBar />
+      </Suspense>
+      <Suspense fallback={<NavStripSkeleton pathname={pathname} />}>
+        <NavStrip pathname={pathname} />
+      </Suspense>
       <main className="flex-1 min-w-0">{children}</main>
     </div>
+  );
+}
+
+function TopBar() {
+  const active = useActiveCount();
+  return (
+    <header className="h-14 px-6 flex items-center justify-between border-b border-border bg-[var(--bg)]">
+      <BrandLink />
+      <div className="flex items-center gap-3">
+        <RepoSelector />
+        <div className="flex items-center gap-2 px-2.5 py-1 rounded border border-border bg-[var(--bg-elev)]">
+          <LiveDot active={active > 0} />
+          <span className="text-xs text-[var(--fg-muted)] tabular-nums">
+            {active > 0 ? `${active} in flight` : "idle"}
+          </span>
+        </div>
+        <CommandHint />
+      </div>
+    </header>
+  );
+}
+
+function TopBarSkeleton() {
+  return (
+    <header className="h-14 px-6 flex items-center justify-between border-b border-border bg-[var(--bg)]">
+      <BrandLink />
+      <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 px-2.5 py-1 rounded border border-border bg-[var(--bg-elev)]">
+          <LiveDot active={false} />
+          <span className="text-xs text-[var(--fg-muted)]">idle</span>
+        </div>
+        <CommandHint />
+      </div>
+    </header>
+  );
+}
+
+function BrandLink() {
+  return (
+    <Link href="/" className="flex items-center gap-3 group">
+      <OtisMark className="h-8 w-8" />
+      <div className="leading-tight">
+        <div className="font-serif text-lg text-[var(--fg)] group-hover:opacity-90 transition-opacity">
+          Otis
+        </div>
+        <div className="text-[10px] uppercase tracking-[0.18em] text-[var(--fg-muted)]">
+          AI engineer · 42nights
+        </div>
+      </div>
+    </Link>
+  );
+}
+
+const NAV = [
+  { href: "/", label: "Home" },
+  { href: "/sessions", label: "Sessions" },
+  { href: "/inbox", label: "Inbox" },
+  { href: "/settings", label: "Settings" },
+] as const;
+
+function NavStrip({ pathname }: { pathname: string }) {
+  const search = useSearchParams();
+  const repoParam = search.get("repo");
+  const navQs = repoParam ? `?repo=${encodeURIComponent(repoParam)}` : "";
+  return <NavStripBase pathname={pathname} navQs={navQs} />;
+}
+
+function NavStripSkeleton({ pathname }: { pathname: string }) {
+  return <NavStripBase pathname={pathname} navQs="" />;
+}
+
+function NavStripBase({
+  pathname,
+  navQs,
+}: {
+  pathname: string;
+  navQs: string;
+}) {
+  return (
+    <nav className="h-11 px-6 flex items-end gap-1 border-b border-border bg-[var(--bg)]">
+      {NAV.map(({ href, label }) => {
+        const active =
+          pathname === href || (href !== "/" && pathname.startsWith(href));
+        return (
+          <Link
+            key={href}
+            href={`${href}${navQs}`}
+            className={cn(
+              "px-3 h-full inline-flex items-center text-sm transition-colors relative",
+              active
+                ? "text-[var(--fg)]"
+                : "text-[var(--fg-muted)] hover:text-[var(--fg)]",
+            )}
+          >
+            {label}
+            {active && (
+              <span className="absolute bottom-0 left-3 right-3 h-px bg-[var(--accent)]" />
+            )}
+          </Link>
+        );
+      })}
+    </nav>
   );
 }

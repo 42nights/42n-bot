@@ -1,13 +1,18 @@
 import { db } from "../db";
-import { embedBatch, EMBED_DIM } from "../embeddings/openai";
+import { embedBatch, activeEmbedDim } from "../embeddings";
 import { log } from "../shared/logger";
 
-function bufToVec(b: Buffer): Float32Array {
+function bufToVec(b: Buffer): Float32Array | null {
   // A4: SQLite BLOB buffers are not guaranteed to land on a 4-byte boundary,
-  // and `new Float32Array(b.buffer, b.byteOffset, EMBED_DIM)` throws an
-  // alignment error when `b.byteOffset % 4 !== 0`. Copy first to realign.
+  // and `new Float32Array(b.buffer, b.byteOffset, dim)` throws an alignment
+  // error when `b.byteOffset % 4 !== 0`. Copy first to realign.
   const copy = Buffer.from(b);
-  return new Float32Array(copy.buffer, copy.byteOffset, EMBED_DIM);
+  const dim = activeEmbedDim();
+  // If the stored vector dimension doesn't match the active backend (e.g. the
+  // user swapped OpenAI ↔ local), skip it. The corpus refresh will re-embed
+  // these rows on the next pass.
+  if (copy.byteLength !== dim * 4) return null;
+  return new Float32Array(copy.buffer, copy.byteOffset, dim);
 }
 function vecToBuf(v: Float32Array): Buffer {
   return Buffer.from(v.buffer, v.byteOffset, v.byteLength);
@@ -225,23 +230,22 @@ export async function searchCorpus(query: string, limit = 8): Promise<CorpusHit[
     .all() as Array<{ id: number; run_id: number | null; text: string; embedding: Buffer | null }>;
   if (!rows.length) return [];
 
-  // If we can embed the query, do cosine. Otherwise keyword fallback.
+  // Local embeddings always work; OpenAI is only used when explicitly enabled.
+  // If embedding fails for any reason, fall back to keyword overlap below.
   let qVec: Float32Array | null = null;
-  if (process.env.OPENAI_API_KEY) {
-    try {
-      const [v] = await embedBatch([query]);
-      qVec = v;
-    } catch {
-      qVec = null;
-    }
+  try {
+    const [v] = await embedBatch([query]);
+    qVec = v;
+  } catch {
+    qVec = null;
   }
 
   const scored: CorpusHit[] = [];
   for (const r of rows) {
-    if (qVec && r.embedding) {
-      const v = bufToVec(r.embedding);
+    const stored = r.embedding ? bufToVec(r.embedding) : null;
+    if (qVec && stored) {
       let s = 0;
-      for (let i = 0; i < v.length; i++) s += qVec[i] * v[i];
+      for (let i = 0; i < stored.length; i++) s += qVec[i] * stored[i];
       scored.push({ chunkId: r.id, runId: r.run_id, text: r.text, score: s });
     } else {
       const qWords = query.toLowerCase().split(/\W+/).filter(Boolean);

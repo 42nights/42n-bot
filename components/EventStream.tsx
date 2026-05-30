@@ -49,19 +49,42 @@ export function EventStream({
 
   useEffect(() => {
     if (!live) return;
-    const src = new EventSource(`/api/runs/${runId}/events`);
-    src.onmessage = (ev) => {
-      try {
-        const e = JSON.parse(ev.data) as EventRow;
-        setEvents((prev) =>
-          prev.some((p) => p.id === e.id) ? prev : [...prev, e],
-        );
-      } catch {
-        /* swallow */
-      }
+    let src: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let closedByUs = false;
+
+    const connect = () => {
+      src = new EventSource(`/api/runs/${runId}/events`);
+      src.onmessage = (ev) => {
+        try {
+          const e = JSON.parse(ev.data) as EventRow;
+          setEvents((prev) =>
+            prev.some((p) => p.id === e.id) ? prev : [...prev, e],
+          );
+        } catch {
+          /* swallow */
+        }
+      };
+      src.addEventListener("end", () => {
+        closedByUs = true;
+        src?.close();
+      });
+      src.onerror = () => {
+        if (closedByUs) return;
+        src?.close();
+        // Reconnect after a short delay. EventSource auto-reconnects on
+        // simple network failures but not when we explicitly close on error;
+        // do it ourselves with a backoff cap.
+        reconnectTimer = setTimeout(connect, 2000);
+      };
     };
-    src.addEventListener("end", () => src.close());
-    return () => src.close();
+
+    connect();
+    return () => {
+      closedByUs = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      src?.close();
+    };
   }, [runId, live]);
 
   useEffect(() => {

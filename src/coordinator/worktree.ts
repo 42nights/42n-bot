@@ -6,6 +6,25 @@ import { botConfig } from "../../bot.config";
 import { db } from "../db";
 import { log } from "../shared/logger";
 
+/**
+ * Crashed git operations (worktree add, push, fetch) sometimes leave lock
+ * files in `.git/`. They block every subsequent op until removed. Cheap to
+ * sweep on startup + before fetches.
+ */
+export async function clearGitLocks(repoDir: string): Promise<void> {
+  const locks = [
+    "config.lock",
+    "index.lock",
+    "HEAD.lock",
+    "packed-refs.lock",
+  ];
+  await Promise.all(
+    locks.map((name) =>
+      fs.rm(path.join(repoDir, ".git", name), { force: true }).catch(() => {}),
+    ),
+  );
+}
+
 const PROTECTED_REFS = new Set(["main", "master", "trunk", "develop"]);
 
 /** Belt-and-suspenders: anything that touches branches in the bot must call this first. */
@@ -89,12 +108,33 @@ export async function reapOrphans(repoDir: string) {
   }
 }
 
+/**
+ * Sweep crashed runs back to 'failed' and clean up their on-disk debris.
+ *
+ * Per-repo: the caller passes the `repoDir` they own, and we only touch runs
+ * whose `repo` column matches a row in `repos` with that `repo_dir`. Bot
+ * instances watching multiple repos call this once per dir so each one's
+ * worktrees + branches get scrubbed in the right git context.
+ *
+ * What we clean per crashed run:
+ *  - The worktree dir (via `git worktree remove --force`)
+ *  - The dangling `bot/issue-*` branch left behind
+ *  - Stale `.git/*.lock` files in the parent repoDir
+ */
 export async function recoverCrashedRuns(repoDir: string) {
-  // B9: include 'queued' so runs that died between createRunRow and the
-  // first state transition don't get stuck forever.
+  await clearGitLocks(repoDir);
+
+  // Match runs to this repoDir via the `repos` table. Falls back to "all
+  // active runs" if there are no rows with a repo_dir (PAT-only setup with
+  // process.env.REPO_DIR — only one repoDir exists, ambiguity moot).
+  const reposForDir = db
+    .prepare(`SELECT owner, name FROM repos WHERE repo_dir = ?`)
+    .all(repoDir) as Array<{ owner: string; name: string }>;
+  const repoKeys = new Set(reposForDir.map((r) => `${r.owner}/${r.name}`));
+
   const active = db
     .prepare(
-      `SELECT id, worktree_path, repo, issue_number FROM runs
+      `SELECT id, worktree_path, repo, issue_number, branch_name FROM runs
          WHERE status IN ('queued','planning','implementing','verifying','iterating')`,
     )
     .all() as Array<{
@@ -102,8 +142,12 @@ export async function recoverCrashedRuns(repoDir: string) {
     worktree_path: string | null;
     repo: string;
     issue_number: number | null;
+    branch_name: string | null;
   }>;
+
+  let cleaned = 0;
   for (const r of active) {
+    if (repoKeys.size > 0 && !repoKeys.has(r.repo)) continue;
     if (r.worktree_path) {
       await removeWorktree({
         repoDir,
@@ -111,9 +155,18 @@ export async function recoverCrashedRuns(repoDir: string) {
         force: true,
       });
     }
+    if (r.branch_name) {
+      assertNotProtected(r.branch_name);
+      try {
+        await simpleGit(repoDir).raw(["branch", "-D", r.branch_name]);
+      } catch {
+        // Branch may not exist (never got created, or already cleaned). Fine.
+      }
+    }
     db.prepare(
       `UPDATE runs SET status='failed', error_message='coordinator restart', finished_at=? WHERE id=?`,
     ).run(Date.now(), r.id);
+    cleaned++;
   }
-  return active.length;
+  return cleaned;
 }

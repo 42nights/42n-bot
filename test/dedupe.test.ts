@@ -12,8 +12,10 @@ function toVec(text: string): Float32Array {
   v[idx] = 1;
   return v;
 }
-vi.mock("../src/embeddings/openai", () => ({
+vi.mock("../src/embeddings", () => ({
   EMBED_DIM: 1536,
+  activeEmbedDim: () => 1536,
+  embeddingsBackend: () => "local",
   embedOne: async (text: string) => toVec(text),
   embedBatch: async (texts: string[]) => texts.map(toVec),
 }));

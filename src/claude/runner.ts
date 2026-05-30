@@ -8,6 +8,18 @@ import { emitEvent } from "../shared/events";
 import { log } from "../shared/logger";
 import { consumeStreamLine, emptySink, evaluateHang } from "./stream";
 
+/**
+ * Strip ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN before spawning so the CLI
+ * uses its keychain OAuth login. Set USE_ANTHROPIC_API_KEY=1 to opt out.
+ */
+function spawnEnv(): NodeJS.ProcessEnv {
+  if (process.env.USE_ANTHROPIC_API_KEY === "1") return process.env;
+  const out = { ...process.env };
+  delete out.ANTHROPIC_API_KEY;
+  delete out.ANTHROPIC_AUTH_TOKEN;
+  return out;
+}
+
 export type ClaudeRunMode = "plan" | "implement" | "critic" | "review";
 
 export type ClaudeRunOptions = {
@@ -83,7 +95,7 @@ export async function runClaudeCode(opts: ClaudeRunOptions): Promise<ClaudeRunRe
   const stdoutPath = path.join(tmpDir, "stdout.ndjson");
   const stderrPath = path.join(tmpDir, "stderr.log");
 
-  const args: string[] = ["-p", opts.prompt, "--bare"];
+  const args: string[] = ["-p", opts.prompt];
   args.push("--output-format", "stream-json", "--verbose", "--include-partial-messages");
   args.push("--allowedTools", opts.allowedTools.join(","));
   if (opts.permissionMode) args.push("--permission-mode", opts.permissionMode);
@@ -114,10 +126,7 @@ export async function runClaudeCode(opts: ClaudeRunOptions): Promise<ClaudeRunRe
       cwd: opts.cwd,
       timeout: opts.timeoutMs ?? botConfig.claudeCode.defaultTimeoutMs,
       killSignal: "SIGKILL",
-      env: {
-        ...process.env,
-        ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "",
-      },
+      env: spawnEnv(),
       encoding: "utf8",
       maxBuffer: 100 * 1024 * 1024,
     });
@@ -285,7 +294,6 @@ export async function runStructuredPlan<T>(opts: {
   const args = [
     "-p",
     opts.prompt,
-    "--bare",
     "--output-format",
     "json",
     "--json-schema",
@@ -318,10 +326,7 @@ export async function runStructuredPlan<T>(opts: {
         cwd: opts.cwd,
         timeout: opts.timeoutMs ?? botConfig.claudeCode.plannerTimeoutMs,
         maxBuffer: 10 * 1024 * 1024,
-        env: {
-          ...process.env,
-          ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "",
-        },
+        env: spawnEnv(),
       });
       const parsed = ClaudeJsonResultSchema.parse(JSON.parse(stdout));
       const candidate = parsed.structured_output ?? parsed.result;

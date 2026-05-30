@@ -65,8 +65,6 @@ export const botConfig = {
   dashboard: {
     url: process.env.DASHBOARD_URL ?? "http://localhost:3000",
   },
-
-  demoMode: process.env.DEMO_MODE === "1",
 };
 
 export type BotConfig = typeof botConfig;
