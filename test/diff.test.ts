@@ -20,6 +20,12 @@ describe("checkDiffSize", () => {
     expect(r.pass).toBe(true);
   });
 
+  it("counts an empty diff as 0 lines, not 1 (QA5)", () => {
+    const r = checkDiffSize("", samplePlan);
+    expect(r.pass).toBe(true);
+    expect(r.detail).toMatchObject({ lineCount: 0 });
+  });
+
   it("flags a giant diff", () => {
     const huge = Array(2000).fill("+ line").join("\n");
     const r = checkDiffSize(huge, samplePlan);

@@ -9,6 +9,7 @@ import { checkMigration, type MigrationResult } from "./migration";
 type DevServerInfo = { command: string; port: number };
 
 function detectDevServer(cwd: string): DevServerInfo {
+  const port = Number(process.env.PORT) || 3000;
   const pkgPath = path.join(cwd, "package.json");
   if (fs.existsSync(pkgPath)) {
     try {
@@ -16,28 +17,21 @@ function detectDevServer(cwd: string): DevServerInfo {
         scripts?: Record<string, string>;
       };
       const scripts = pkg.scripts ?? {};
-      const command =
-        scripts["bot:smoke"] ??
-        scripts.dev ??
-        scripts.start ??
-        null;
-      if (command) {
-        const port = Number(process.env.PORT) || 3000;
-        return { command: `npm run ${getScriptName(scripts, command)}`, port };
+      // QA5 (R5 finding 8): select by NAME with a precedence order, not by
+      // command value. The previous code picked a command value then
+      // reverse-looked-up its name — if two scripts shared the same command
+      // (e.g. `start` and `bot:smoke` both `node server.js`), it could run
+      // the wrong one. Here `bot:smoke` always wins when present.
+      for (const name of ["bot:smoke", "dev", "start"]) {
+        if (scripts[name]) {
+          return { command: `npm run ${name}`, port };
+        }
       }
     } catch {
       /* malformed package.json */
     }
   }
-  return { command: "npm run dev", port: Number(process.env.PORT) || 3000 };
-}
-
-function getScriptName(
-  scripts: Record<string, string>,
-  value: string,
-): string {
-  const entry = Object.entries(scripts).find(([, v]) => v === value);
-  return entry ? entry[0] : "dev";
+  return { command: "npm run dev", port };
 }
 
 type RuntimeDetail = {

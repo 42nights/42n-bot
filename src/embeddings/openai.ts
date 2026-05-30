@@ -39,6 +39,10 @@ export async function embedBatch(texts: string[]): Promise<Float32Array[]> {
 }
 
 export async function embedOne(text: string): Promise<Float32Array> {
+  // QA5 (R5 finding 7): a malformed API response could yield an empty batch,
+  // making `v` undefined and violating the Promise<Float32Array> contract
+  // (the caller would cosine-compare `undefined`). Fail explicitly.
   const [v] = await embedBatch([text]);
+  if (!v) throw new Error("embedOne: embeddings API returned no vector");
   return v;
 }

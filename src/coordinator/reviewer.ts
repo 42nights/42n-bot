@@ -42,7 +42,33 @@ export type ReviewerInput = {
   repo: string;
 };
 
+// QA5 (R5 finding 1): per-repo in-process lock. The reviewer reads the full
+// open-issue set, then dedups candidates against it, then files. If two
+// reviewer runs on the SAME repo overlap (coordinator interval/dispatch + a
+// cron-fired reviewer, all in the coordinator process), both read the same
+// list before either files → duplicate issues. This serializes them. A
+// second concurrent call on the same repo returns a no-op result.
+const reviewerInFlight = new Set<string>();
+
 export async function runReviewer(input: ReviewerInput): Promise<{
+  runId: number;
+  proposed: number;
+  opened: number;
+  deduped: number;
+}> {
+  const repoKey = `${input.owner}/${input.repo}`;
+  if (reviewerInFlight.has(repoKey)) {
+    return { runId: -1, proposed: 0, opened: 0, deduped: 0 };
+  }
+  reviewerInFlight.add(repoKey);
+  try {
+    return await runReviewerInner(input);
+  } finally {
+    reviewerInFlight.delete(repoKey);
+  }
+}
+
+async function runReviewerInner(input: ReviewerInput): Promise<{
   runId: number;
   proposed: number;
   opened: number;

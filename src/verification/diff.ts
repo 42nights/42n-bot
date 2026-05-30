@@ -55,7 +55,9 @@ async function intentToAddUntracked(cwd: string): Promise<void> {
 }
 
 export function checkDiffSize(diffText: string, plan: Plan): CheckResult {
-  const lineCount = diffText.split("\n").length;
+  // QA5 (R5 finding 9): an empty diff has 0 lines, not 1. `"".split("\n")`
+  // yields `[""]` (length 1), so a no-op PR used to report "1 line".
+  const lineCount = diffText === "" ? 0 : diffText.split("\n").length;
   const max = botConfig.verification.diffMaxLines;
   // `large` complexity gets twice the budget.
   const effectiveMax = plan.complexity === "large" ? max * 2 : max;

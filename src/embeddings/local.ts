@@ -45,8 +45,16 @@ export async function embedBatchLocal(texts: string[]): Promise<Float32Array[]> 
   const flat = out.data as Float32Array;
   const batch = texts.length;
   const dim = flat.length / batch;
-  if (dim !== LOCAL_EMBED_DIM) {
-    log.warn("embed", `unexpected dim ${dim} (want ${LOCAL_EMBED_DIM})`);
+  // QA5 (R5 finding 6): a wrong dim used to only warn, then proceed to slice
+  // with a non-integer/incorrect dim — silently producing misaligned vectors
+  // that corrupt every downstream cosine comparison. A dim mismatch means the
+  // model loaded wrong; throw so the corpus/dedup layer treats it as an
+  // embedding failure (it already degrades to keyword search) rather than
+  // trusting garbage similarity.
+  if (!Number.isInteger(dim) || dim !== LOCAL_EMBED_DIM) {
+    throw new Error(
+      `local embedding produced dim ${dim} (expected ${LOCAL_EMBED_DIM}) — model load is corrupt`,
+    );
   }
   const result: Float32Array[] = [];
   for (let i = 0; i < batch; i++) {
@@ -58,5 +66,6 @@ export async function embedBatchLocal(texts: string[]): Promise<Float32Array[]> 
 
 export async function embedOneLocal(text: string): Promise<Float32Array> {
   const [v] = await embedBatchLocal([text]);
+  if (!v) throw new Error("embedOneLocal: no vector produced");
   return v;
 }

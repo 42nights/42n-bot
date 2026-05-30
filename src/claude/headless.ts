@@ -108,70 +108,67 @@ export async function runClaudeHeadless(opts: {
  * `{placeholder}`, etc.) instead of choking on them.
  */
 export function extractJson(s: string): unknown {
-  // QA4: bound total scan work. The naive "try every opener, scan to EOF"
-  // is O(n²) on pathological input (e.g. thousands of unbalanced `{` before
-  // the real JSON). We can't simply break on the first unbalanced opener —
-  // an unclosed `{` ignores `[]`, so valid JSON can still be nested later —
-  // so instead we cap the TOTAL characters scanned across all attempts.
-  // Legitimate output finds its JSON in the first region (cheap); a
-  // garbage/attack string just exhausts the budget and returns undefined.
-  const budget = { left: Math.max(200_000, s.length * 4) };
-  for (let i = 0; i < s.length; i++) {
-    if (budget.left <= 0) break;
-    const opener = s[i];
-    if (opener !== "{" && opener !== "[") continue;
-    const region = balancedRegion(s, i, budget);
-    if (region === null) continue;
-    try {
-      return JSON.parse(s.slice(i, region + 1));
-    } catch {
-      // Balanced braces but not valid JSON (e.g. `{placeholder}`). Continue
-      // scanning — valid JSON may still appear later (or nested).
-      continue;
-    }
-  }
-  return undefined;
-}
-
-/**
- * Returns the index of the matching closer for the opener at `start`, or null
- * if the braces don't balance before the string ends OR the scan budget runs
- * out. String-aware (ignores braces inside JSON string literals + escapes).
- */
-function balancedRegion(
-  s: string,
-  start: number,
-  budget: { left: number },
-): number | null {
-  const opener = s[start];
-  const closer = opener === "{" ? "}" : "]";
-  let depth = 0;
+  // QA5 (R5 finding 2): a SINGLE linear O(n) pass. The prior "try every
+  // opener, scan each to EOF" was O(n²) and a budget cap could starve out a
+  // legitimate large JSON sitting after lots of balanced code-example braces
+  // (each failed scan burned budget). This walks the string once, tracking
+  // bracket depth with a stack, and whenever a TOP-LEVEL region closes
+  // (depth returns to 0) it tries to JSON.parse that region. Each character
+  // is visited once → O(n) total regardless of how many candidate regions
+  // exist. String-aware (ignores brackets inside JSON string literals).
+  //
+  // The one case this can't recover: valid JSON nested inside an opener that
+  // is itself never closed (e.g. `{garbage {"valid":1}`). That's degenerate
+  // input we accept returning undefined for.
   let inStr = false;
   let esc = false;
-  for (let i = start; i < s.length; i++) {
-    if (--budget.left <= 0) return null;
+  let startIdx = -1; // start of the current top-level region
+  let startChar = ""; // '{' or '[' that opened it
+  const stack: string[] = [];
+
+  for (let i = 0; i < s.length; i++) {
     const c = s[i];
     if (inStr) {
-      if (esc) {
-        esc = false;
-        continue;
-      }
-      if (c === "\\") {
-        esc = true;
-        continue;
-      }
-      if (c === '"') inStr = false;
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
       continue;
     }
     if (c === '"') {
       inStr = true;
       continue;
     }
-    if (c === opener) depth++;
-    else if (c === closer) {
-      depth--;
-      if (depth === 0) return i;
+    if (c === "{" || c === "[") {
+      if (stack.length === 0) {
+        startIdx = i;
+        startChar = c;
+      }
+      stack.push(c);
+    } else if (c === "}" || c === "]") {
+      if (stack.length === 0) continue; // stray closer in prose
+      const open = stack.pop()!;
+      const matches =
+        (open === "{" && c === "}") || (open === "[" && c === "]");
+      if (!matches) {
+        // Mismatched bracket — reset; this region is malformed.
+        stack.length = 0;
+        startIdx = -1;
+        continue;
+      }
+      if (stack.length === 0 && startIdx >= 0) {
+        // Completed a top-level region. Try to parse it.
+        const candidate = s.slice(startIdx, i + 1);
+        // Only bother if it looks like the start of a JSON value.
+        if (startChar === "{" || startChar === "[") {
+          try {
+            return JSON.parse(candidate);
+          } catch {
+            // Balanced but not JSON (e.g. a code block) — keep scanning.
+          }
+        }
+        startIdx = -1;
+      }
     }
   }
-  return null;
+  return undefined;
 }

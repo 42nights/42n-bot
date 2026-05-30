@@ -142,25 +142,44 @@ async function pollOnce() {
   }
 }
 
+// QA5 (R5 finding 1, CRITICAL): reviewerOnce has THREE async entry points —
+// the initial run, the interval tick, and the dispatch tick — all
+// fire-and-forget. Without a guard, a dispatch tick can start a second
+// reviewerOnce while the first is still awaiting the GitHub issue list, and
+// both read the same open-issue set, both pass the dedup check on the same
+// candidates, and both file the issue → duplicates. A single in-process flag
+// serializes them (matches the cron scheduler's `ticking` guard + the
+// MAX_CONCURRENT_REVIEWER_CRONS=1 intent).
+let reviewerRunning = false;
+
 async function reviewerOnce() {
   if (!botConfig.reviewer.enabled) return;
-  for (const repoCfg of activeRepos()) {
-    if (!repoCfg.enabled) continue;
-    const repoDir = repoCfg.repo_dir ?? process.env.REPO_DIR;
-    if (!repoDir) continue;
-    try {
-      const result = await runReviewer({
-        repoDir,
-        owner: repoCfg.owner,
-        repo: repoCfg.name,
-      });
-      log.info(
-        "coord",
-        `reviewer ran on ${repoCfg.owner}/${repoCfg.name}: proposed=${result.proposed} opened=${result.opened} deduped=${result.deduped}`,
-      );
-    } catch (err) {
-      log.error("coord", `reviewer failed: ${err}`);
+  if (reviewerRunning) {
+    log.debug("coord", "reviewer already running — skipping re-entry");
+    return;
+  }
+  reviewerRunning = true;
+  try {
+    for (const repoCfg of activeRepos()) {
+      if (!repoCfg.enabled) continue;
+      const repoDir = repoCfg.repo_dir ?? process.env.REPO_DIR;
+      if (!repoDir) continue;
+      try {
+        const result = await runReviewer({
+          repoDir,
+          owner: repoCfg.owner,
+          repo: repoCfg.name,
+        });
+        log.info(
+          "coord",
+          `reviewer ran on ${repoCfg.owner}/${repoCfg.name}: proposed=${result.proposed} opened=${result.opened} deduped=${result.deduped}`,
+        );
+      } catch (err) {
+        log.error("coord", `reviewer failed: ${err}`);
+      }
     }
+  } finally {
+    reviewerRunning = false;
   }
 }
 

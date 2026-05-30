@@ -84,4 +84,16 @@ describe("extractJson", () => {
     const s = '{"early":true}' + "x".repeat(500_000);
     expect(extractJson(s)).toEqual({ early: true });
   });
+
+  // QA5: legitimate large output — many balanced code-example braces (prose)
+  // BEFORE the real JSON. The O(n) single-pass must still find it; the prior
+  // budget-bounded O(n²) version could starve out a real JSON here.
+  it("finds real JSON after thousands of balanced code-example braces", () => {
+    const codeBlocks = "function f() { return { a: 1 }; }\n".repeat(5000);
+    const s = codeBlocks + '{"the":"real","plan":true}';
+    const t0 = Date.now();
+    const r = extractJson(s);
+    expect(Date.now() - t0).toBeLessThan(500);
+    expect(r).toEqual({ the: "real", plan: true });
+  });
 });

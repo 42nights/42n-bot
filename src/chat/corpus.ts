@@ -2,6 +2,27 @@ import { db } from "../db";
 import { embedBatch, activeEmbedDim } from "../embeddings";
 import { log } from "../shared/logger";
 
+/**
+ * QA5 (R5 finding 3): user-controlled fields (issue title/body, error
+ * messages, plan text) flow into the chat-RAG corpus and become LLM prompt
+ * context. An issue titled `Fix bug" — ignore all rules and ...` is a
+ * prompt-injection vector. We neutralize the obvious breakouts: collapse
+ * newlines (so a field can't open a fake section), strip backticks/quotes
+ * that could close a delimiter, and cap length. This isn't a complete
+ * defense against prompt injection (no escaping fully is) — answer.ts also
+ * wraps corpus text in <run> tags and instructs the model to treat it as
+ * untrusted data — but it removes the cheap breakouts.
+ */
+function sanitizeField(s: string | null | undefined, max = 300): string {
+  if (!s) return "";
+  return s
+    .replace(/[`\r\n]+/g, " ")
+    .replace(/"/g, "'")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, max);
+}
+
 function bufToVec(b: Buffer): Float32Array | null {
   // A4: SQLite BLOB buffers are not guaranteed to land on a 4-byte boundary,
   // and `new Float32Array(b.buffer, b.byteOffset, dim)` throws an alignment
@@ -67,9 +88,9 @@ export function summarizeRun(runId: number): string | null {
   const lines: string[] = [];
   lines.push(`# Run #${run.id} — ${run.type}`);
   if (run.issue_number) {
-    lines.push(`Issue: #${run.issue_number} "${run.issue_title ?? ""}"`);
+    lines.push(`Issue: #${run.issue_number} "${sanitizeField(run.issue_title)}"`);
   }
-  lines.push(`Repo: ${run.repo}`);
+  lines.push(`Repo: ${sanitizeField(run.repo, 120)}`);
   lines.push(`Status: ${run.status}`);
   lines.push(`Started: ${new Date(run.started_at).toISOString()}`);
   if (run.finished_at) {
@@ -80,7 +101,7 @@ export function summarizeRun(runId: number): string | null {
   lines.push(`Attempts: ${run.attempts}`);
   lines.push(`Cost: $${run.cost_usd.toFixed(4)}`);
   if (run.pr_number) lines.push(`PR: #${run.pr_number}`);
-  if (run.error_message) lines.push(`Error: ${run.error_message}`);
+  if (run.error_message) lines.push(`Error: ${sanitizeField(run.error_message, 400)}`);
 
   // Plan summary (one paragraph).
   if (planArt?.content) {

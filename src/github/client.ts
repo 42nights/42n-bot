@@ -5,6 +5,7 @@ import {
   ghInstallation,
   installationIdForRepo,
 } from "./app";
+import { log } from "../shared/logger";
 
 // B7: enable plugin-retry so a single 502/503/504 from GitHub doesn't drop
 // the whole run. Default policy is exponential backoff up to 3 retries on
@@ -119,16 +120,22 @@ export async function listLabeledIssues(args: {
 }
 
 /**
- * A10: paginate to the full open-issue set, capped at 500. Without this, the
- * reviewer's dedupe gets silently truncated at 100 — old issues drop out and
- * the bot starts filing duplicates.
+ * A10: paginate to the full open-issue set. Without this, the reviewer's
+ * dedupe gets silently truncated and the bot starts filing duplicates.
+ *
+ * QA5 (R5 finding 4): raised the cap from 500 to 2000 and — critically — LOG
+ * a warning when the cap is actually hit. A silent truncation means a
+ * near-duplicate sitting beyond the cap won't be deduped against, so the
+ * reviewer files a duplicate. The warning makes that gap visible instead of
+ * silent. 2000 covers virtually every real repo; a repo with more open
+ * issues than that has a triage problem the bot shouldn't paper over.
  */
 export async function listAllOpenIssues(args: {
   owner: string;
   repo: string;
   cap?: number;
 }): Promise<IssueSummary[]> {
-  const cap = args.cap ?? 500;
+  const cap = args.cap ?? 2000;
   const all: IssueSummary[] = [];
   const client = ghFor(args.owner, args.repo);
   const iterator = client.paginate.iterator(client.issues.listForRepo, {
@@ -141,7 +148,13 @@ export async function listAllOpenIssues(args: {
     for (const i of page.data as RawIssue[]) {
       if (i.pull_request) continue;
       all.push(toSummary(i));
-      if (all.length >= cap) return all;
+      if (all.length >= cap) {
+        log.warn(
+          "github",
+          `${args.owner}/${args.repo} has >= ${cap} open issues — dedup is incomplete beyond this cap; the reviewer may file duplicates of very old issues.`,
+        );
+        return all;
+      }
     }
   }
   return all;

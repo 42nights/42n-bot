@@ -137,45 +137,50 @@ export async function startDevServer(args: {
 
   const ready = await waitForPort(port, readyTimeoutMs);
   if (!ready) {
-    // Best-effort kill before returning failure.
-    try {
-      process.kill(-(child.pid!), "SIGTERM");
-    } catch {
-      /* ignore */
-    }
+    // QA5 (R5 finding 5): the startup-failure path used a single SIGTERM. A
+    // dev server that ignores SIGTERM (or is slow to exit) would be left
+    // running and accumulate as an orphan across repeated failures. Use the
+    // same robust SIGTERM→wait→SIGKILL teardown as the success-path stop().
+    await teardownProcessGroup(child.pid);
     return { ok: false, error: `dev server did not become ready within ${readyTimeoutMs}ms` };
   }
 
   const stop = async (): Promise<void> => {
-    const pid = child.pid;
-    if (pid == null) return;
-    const killGroup = (sig: NodeJS.Signals) => {
-      try {
-        process.kill(-pid, sig);
-      } catch {
-        /* already dead */
-      }
-    };
-
-    killGroup("SIGTERM");
-
-    // Wait up to 5s for clean exit.
-    const deadline = Date.now() + 5_000;
-    while (Date.now() < deadline) {
-      try {
-        process.kill(pid, 0); // probe — throws if dead
-        await new Promise((r) => setTimeout(r, 200));
-      } catch {
-        return; // process is gone
-      }
-    }
-
-    // Still alive — force kill.
-    killGroup("SIGKILL");
+    await teardownProcessGroup(child.pid);
   };
 
   return {
     ok: true,
     handle: { port, pid: child.pid!, stop },
   };
+}
+
+/**
+ * SIGTERM the process group, wait up to 5s for clean exit, then SIGKILL.
+ * Shared by both the startup-failure path and the normal stop() so neither
+ * can leak an orphaned dev server.
+ */
+async function teardownProcessGroup(pid: number | undefined): Promise<void> {
+  if (pid == null) return;
+  const killGroup = (sig: NodeJS.Signals) => {
+    try {
+      process.kill(-pid, sig);
+    } catch {
+      /* already dead / no such group */
+    }
+  };
+
+  killGroup("SIGTERM");
+
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0); // probe — throws if the process is gone
+      await new Promise((r) => setTimeout(r, 200));
+    } catch {
+      return; // process exited cleanly
+    }
+  }
+
+  killGroup("SIGKILL");
 }
