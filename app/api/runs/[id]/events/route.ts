@@ -24,15 +24,34 @@ export async function GET(
   }
 
   const encoder = new TextEncoder();
+
+  // QA2: hoist the timers so EVERY teardown path (terminal status, client
+  // abort, enqueue failure on a dead pipe, and ReadableStream.cancel) clears
+  // them. Previously a client that dropped without an abort signal left both
+  // intervals running forever — a per-connection leak that compounds under
+  // load (e.g. many browser tabs, flaky proxies).
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+  let closed = false;
+
+  const teardown = () => {
+    closed = true;
+    if (timer) clearInterval(timer);
+    if (heartbeat) clearInterval(heartbeat);
+    timer = null;
+    heartbeat = null;
+  };
+
   const stream = new ReadableStream({
     start(controller) {
-      let closed = false;
       const safeEnqueue = (s: string) => {
         if (closed) return;
         try {
           controller.enqueue(encoder.encode(s));
         } catch {
-          closed = true;
+          // Broken pipe — stop the timers immediately rather than no-opping
+          // every 500ms forever.
+          teardown();
         }
       };
       const send = (data: unknown) =>
@@ -65,33 +84,35 @@ export async function GET(
           // the terminal status flip are still sent.
           if (run && TERMINAL.has(run.status ?? "")) {
             safeEnqueue(`event: end\ndata: done\n\n`);
-            closed = true;
+            teardown();
             try {
               controller.close();
             } catch {/* already closed */}
-            clearInterval(timer);
-            clearInterval(heartbeat);
           }
         } catch {
           /* per-tick errors are non-fatal */
         }
       };
 
-      const timer = setInterval(tick, 500);
+      timer = setInterval(tick, 500);
 
       // B4: keepalive comment every 30s. Cloudflare, nginx, and friends close
       // idle SSE streams around the ~100s mark; a 30s heartbeat is well under
       // every reasonable proxy timeout.
-      const heartbeat = setInterval(() => safeEnqueue(`: keepalive\n\n`), 30_000);
+      heartbeat = setInterval(() => safeEnqueue(`: keepalive\n\n`), 30_000);
 
       req.signal.addEventListener("abort", () => {
-        closed = true;
-        clearInterval(timer);
-        clearInterval(heartbeat);
+        teardown();
         try {
           controller.close();
         } catch {/* already closed */}
       });
+    },
+    // QA2: ReadableStream.cancel fires when the consumer side is torn down
+    // (browser navigates away, fetch aborted) — a path the abort listener
+    // doesn't always cover. Clean up here too.
+    cancel() {
+      teardown();
     },
   });
 

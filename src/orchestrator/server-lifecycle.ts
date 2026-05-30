@@ -45,12 +45,33 @@ async function isPortInUse(port: number): Promise<boolean> {
  * runtime-verification phase would shell it out. We constrain the command to
  * known package-runner prefixes + safe characters. Anything else returns an
  * error and the runtime check is skipped.
+ *
+ * QA2: tightened from Round 1. `..` substrings are explicitly rejected (no
+ * path-traversal into the parent), and leading `/` in any argument is
+ * rejected (no absolute paths like `node /etc/passwd`). Still uses
+ * `shell: true` because `npm run dev` itself relies on shell expansion to
+ * execute the script — the regex is the gate, the shell can't undo it.
+ *
+ * What this can NOT defend against: a malicious `package.json` script that
+ * the model invokes via `npm run dev` — the script content is the target
+ * repo's, not ours. That risk is mitigated by the per-repo opt-in for
+ * runtime verification (see `runtime/index.ts`).
  */
 const SAFE_COMMAND_RE =
-  /^(npm|npx|pnpm|yarn|node|next|vite|nest|cargo|python|python3|uvicorn|gunicorn|deno|bun|tsx)\s+[a-zA-Z0-9 \-_.@:\/]+$/;
+  /^(npm|npx|pnpm|yarn|node|next|vite|nest|cargo|python|python3|uvicorn|gunicorn|deno|bun|tsx)(\s+[a-zA-Z0-9_.@:\-]+(?:\/[a-zA-Z0-9_.@:\-]+)*)+$/;
 
 export function isCommandSafe(command: string): boolean {
-  return SAFE_COMMAND_RE.test(command.trim());
+  const trimmed = command.trim();
+  if (!trimmed) return false;
+  // No path-traversal substrings anywhere.
+  if (trimmed.includes("..")) return false;
+  // No absolute paths in any argument position. The regex disallows it via
+  // requiring a non-`/` first char in each arg, but this is the readable
+  // double-check.
+  if (/(\s|^)\//.test(trimmed)) return false;
+  // No newlines, tabs, or other control characters.
+  if (/[\x00-\x1f]/.test(trimmed)) return false;
+  return SAFE_COMMAND_RE.test(trimmed);
 }
 
 export async function startDevServer(args: {

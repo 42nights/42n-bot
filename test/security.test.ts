@@ -39,6 +39,30 @@ describe("isCommandSafe (dev-server allowlist)", () => {
     expect(isCommandSafe("   ")).toBe(false);
     expect(isCommandSafe("\n")).toBe(false);
   });
+
+  // QA2 — Round 1 regex still permitted these. Round 2 closed them.
+  it("rejects path traversal in arguments", () => {
+    expect(isCommandSafe("node ../../../../etc/shadow")).toBe(false);
+    expect(isCommandSafe("tsx ../../secret.ts")).toBe(false);
+    expect(isCommandSafe("python ../config")).toBe(false);
+  });
+
+  it("rejects absolute paths in arguments", () => {
+    expect(isCommandSafe("node /etc/passwd")).toBe(false);
+    expect(isCommandSafe("python /usr/bin/evil")).toBe(false);
+    expect(isCommandSafe("node /")).toBe(false);
+  });
+
+  it("rejects embedded newlines that smuggle a second command", () => {
+    expect(isCommandSafe("npm run dev\nrm -rf /")).toBe(false);
+    expect(isCommandSafe("npm run dev\trm -rf /")).toBe(false);
+  });
+
+  it("still accepts legitimate relative script paths", () => {
+    // A subdir path with no traversal is fine.
+    expect(isCommandSafe("node scripts/dev-server.js")).toBe(true);
+    expect(isCommandSafe("tsx src/server.ts")).toBe(true);
+  });
 });
 
 describe("isSafeGitHubName", () => {

@@ -202,16 +202,18 @@ export async function runVerification(
   // a silent fall-through can't mismark `activeCritic` as a skipped stub.
   let activeCriticKey: "critic" | "critic_v2";
 
-  // We can only run critic v2 with an understanding (it needs acceptance
-  // criteria to adjudicate). If the caller asked for v2 without one, that's
-  // a programming error — fall back to v1 but log it loudly so it surfaces.
-  const wantV2 = args.useCriticV2 && args.understanding;
+  // QA2: previously this silently fell back to v1 when useCriticV2=true but
+  // understanding=null. That defeats the point of v2 — v1 has no acceptance
+  // criteria and can't adjudicate per-criterion. The implementer should have
+  // aborted at the understanding phase; if we got here, something is wrong.
+  // Hard-fail instead of silent-degrade.
   if (args.useCriticV2 && !args.understanding) {
-    log.warn(
-      "verify",
-      "useCriticV2=true but understanding is null — falling back to v1 critic",
+    throw new Error(
+      "useCriticV2 requires an understanding. The implementer should not " +
+        "have reached verification without one. Aborting to fail closed.",
     );
   }
+  const wantV2 = args.useCriticV2 && args.understanding;
 
   if (wantV2) {
     const acceptanceCode =

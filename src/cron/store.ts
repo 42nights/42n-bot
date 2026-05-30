@@ -200,6 +200,15 @@ export function markCronFired(
   }
   const now = Date.now();
   const next = nextFireAt(schedule, now);
+  // QA2: if the cron row was deleted between dueCrons() and now, the UPDATE
+  // hits 0 rows (silent) but the INSERT will FK-violate. Without the early
+  // existence check, the transaction would roll back the schedule advance
+  // and the cron would be "due forever" — infinite retry loop spamming logs
+  // at one error per tick. Skip cleanly when the row is gone.
+  const stillExists = db
+    .prepare(`SELECT 1 FROM crons WHERE id = ?`)
+    .get(id) as { 1: number } | undefined;
+  if (!stillExists) return;
   const tx = db.transaction(() => {
     db.prepare(
       `UPDATE crons SET last_run_at = ?, next_run_at = ?, updated_at = ? WHERE id = ?`,
@@ -216,7 +225,18 @@ export function markCronFired(
       result.runId ?? null,
     );
   });
-  tx();
+  try {
+    tx();
+  } catch (err) {
+    // Last-ditch: if a constraint violation slipped through (e.g., the cron
+    // was deleted between the existence check and the transaction), log and
+    // skip rather than re-throwing. The scheduler's per-cron catch would
+    // already swallow this, but doing it here keeps the schedule advance
+    // moving forward instead of getting stuck.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/FOREIGN KEY/i.test(msg) || /no such row/i.test(msg)) return;
+    throw err;
+  }
 }
 
 export function listCronRuns(cronId: number, limit = 50): CronRunRow[] {

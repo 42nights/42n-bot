@@ -20,36 +20,71 @@ import {
  *
  * Called by the coordinator's main loop on a 30s tick.
  */
+// QA2: `reviewer` crons each spawn a full Claude subprocess + worktree +
+// budget. A misconfigured schedule (e.g. `* * * * *`) firing on many ticks
+// after a restart could spawn 10 concurrent reviewers — resource exhaustion
+// AND duplicate-issue races (two reviewers reading the same open-issue set
+// before either files). Cap heavy reviewer crons to 1 concurrent; the cheap
+// `fix_issue` / `send_otis` actions (just an API call + dispatch) run fully
+// parallel.
+const MAX_CONCURRENT_REVIEWER_CRONS = 1;
+
+async function fireAndRecord(cron: CronRow): Promise<boolean> {
+  try {
+    const result = await fireCron(cron);
+    markCronFired({ id: cron.id, schedule: cron.schedule }, result);
+    log.info(
+      "cron",
+      `fired #${cron.id} (${cron.name}): ${result.ok ? "ok" : "failed"} — ${result.message.slice(0, 200)}`,
+    );
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    markCronFired(
+      { id: cron.id, schedule: cron.schedule },
+      { ok: false, message: msg },
+    );
+    log.error("cron", `cron #${cron.id} threw: ${msg}`);
+    return false;
+  }
+}
+
+// QA2: re-entrancy guard. The coordinator ticks the scheduler every 30s. A
+// slow reviewer cron can take minutes — without this flag, the next interval
+// fires while the first is still running, calls dueCrons() which returns the
+// SAME cron (its next_run_at hasn't advanced yet because markCronFired runs
+// after fireCron completes), and double-fires it.
+let ticking = false;
+
 export async function tickScheduler(): Promise<{ fired: number }> {
+  if (ticking) return { fired: 0 };
+  ticking = true;
+  try {
+    return await tickSchedulerInner();
+  } finally {
+    ticking = false;
+  }
+}
+
+async function tickSchedulerInner(): Promise<{ fired: number }> {
   const due = dueCrons(10);
   if (due.length === 0) return { fired: 0 };
 
-  // QA1: fire in parallel via allSettled so a slow `reviewer` (which can take
-  // several minutes) doesn't block a fast `send_otis` due in the same tick.
-  // Each cron's row is captured before fire so a concurrent delete doesn't
-  // race the history insert.
-  const results = await Promise.allSettled(
-    due.map(async (cron) => {
-      try {
-        const result = await fireCron(cron);
-        markCronFired({ id: cron.id, schedule: cron.schedule }, result);
-        log.info(
-          "cron",
-          `fired #${cron.id} (${cron.name}): ${result.ok ? "ok" : "failed"} — ${result.message.slice(0, 200)}`,
-        );
-        return true;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        markCronFired(
-          { id: cron.id, schedule: cron.schedule },
-          { ok: false, message: msg },
-        );
-        log.error("cron", `cron #${cron.id} threw: ${msg}`);
-        return false;
-      }
-    }),
-  );
-  const fired = results.filter(
+  const heavy = due.filter((c) => c.action === "reviewer");
+  const light = due.filter((c) => c.action !== "reviewer");
+
+  // Light crons fully parallel.
+  const lightResults = await Promise.allSettled(light.map(fireAndRecord));
+
+  // Heavy (reviewer) crons through a small concurrency gate.
+  const heavyResults: PromiseSettledResult<boolean>[] = [];
+  for (let i = 0; i < heavy.length; i += MAX_CONCURRENT_REVIEWER_CRONS) {
+    const batch = heavy.slice(i, i + MAX_CONCURRENT_REVIEWER_CRONS);
+    const settled = await Promise.allSettled(batch.map(fireAndRecord));
+    heavyResults.push(...settled);
+  }
+
+  const fired = [...lightResults, ...heavyResults].filter(
     (r) => r.status === "fulfilled" && r.value === true,
   ).length;
   return { fired };

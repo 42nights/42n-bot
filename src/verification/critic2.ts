@@ -71,11 +71,16 @@ export async function checkCriticV2(args: {
       report,
     };
   } catch (err) {
+    // QA2: this catch previously returned pass:true, which silently bypassed
+    // adjudication on any unexpected throw (Zod parse error, undefined
+    // botConfig field, etc.) — the same shape of silent-bypass we closed in
+    // Round 1's infra-failure path. Treat all exceptions as the same:
+    // route to needs-review with the error in the message.
     return {
       name: "critic_v2",
-      pass: true,
+      pass: false,
       hardGate: false,
-      message: `Critic v2 skipped: ${err instanceof Error ? err.message : String(err)}`,
+      message: `Critic v2 errored: ${err instanceof Error ? err.message : String(err)} — routing to needs-review.`,
     };
   }
 }

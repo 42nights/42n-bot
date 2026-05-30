@@ -45,8 +45,38 @@ function postValidate(
     `${missing.length}/${understanding.relevant_files.length} relevant_files don't exist: ${missing.slice(0, 5).join(", ")}`,
   );
 
-  // Less than half missing — just record the unknowns, leave confidence alone.
-  if (missRatio < 0.5) {
+  // QA2: a model can game a 50% threshold by padding hallucinations with
+  // files that exist in every repo (package.json, README, tsconfig). We
+  // discount "ubiquitous" files when computing the trust ratio — a claim
+  // that consists only of these + hallucinations is still fabricated.
+  const UBIQUITOUS = new Set([
+    "package.json",
+    "package-lock.json",
+    "readme.md",
+    "tsconfig.json",
+    "tsconfig.base.json",
+    ".gitignore",
+    "license",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+  ]);
+  const existing = understanding.relevant_files.filter(
+    (rf) => !missing.includes(rf.path),
+  );
+  const substantiveExisting = existing.filter(
+    (rf) => !UBIQUITOUS.has(rf.path.split("/").pop()?.toLowerCase() ?? ""),
+  );
+
+  // Abort when EITHER:
+  //  - 30%+ of claimed files don't exist (lowered from 50%), OR
+  //  - the model claimed more than 2 files but zero substantive (non-
+  //    ubiquitous) ones actually exist — i.e. it padded with common files.
+  const fabricated =
+    missRatio >= 0.3 ||
+    (understanding.relevant_files.length > 2 &&
+      substantiveExisting.length === 0);
+
+  if (!fabricated) {
     return {
       ...understanding,
       unknowns: [
@@ -56,14 +86,16 @@ function postValidate(
     };
   }
 
-  // Majority missing — fabricated. Drop confidence so the implementer aborts.
   return {
     ...understanding,
     confidence_to_proceed: 0,
     proceed: false,
     abort_reason:
-      `${missing.length} of ${understanding.relevant_files.length} files I claimed to read don't exist in the worktree. ` +
-      `This understanding is probably fabricated — refusing to proceed.`,
+      `${missing.length} of ${understanding.relevant_files.length} files I claimed to read don't exist in the worktree` +
+      (substantiveExisting.length === 0
+        ? `, and the ones that do exist are ubiquitous boilerplate (package.json etc.)` +
+          ` — this understanding looks padded rather than grounded.`
+        : `. This understanding is probably fabricated — refusing to proceed.`),
     unknowns: [
       ...understanding.unknowns,
       ...missing.map((p) => `Claimed file does not exist: ${p}`),

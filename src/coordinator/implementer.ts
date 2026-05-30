@@ -120,9 +120,42 @@ function createRunRow(input: ImplementerInput): number {
   return Number(info.lastInsertRowid);
 }
 
+/**
+ * QA2: column-name allowlist. The previous version interpolated keys
+ * directly into the SQL string. Today every call site passes literal object
+ * keys with known column names, but the function signature accepts
+ * `Record<string, unknown>` — any future caller that destructures user
+ * input (e.g., a webhook field) would have a SQL-injection vector. Throw
+ * on any unknown column instead.
+ */
+const RUNS_UPDATABLE_COLS = new Set<string>([
+  "status",
+  "branch_name",
+  "pr_number",
+  "pr_url",
+  "worktree_path",
+  "attempts",
+  "cost_usd",
+  "finished_at",
+  "error_message",
+  "issue_type",
+  "understanding_json",
+  "acceptance_test_paths_json",
+  "runtime_verification_json",
+  "replan_count",
+]);
+
 function updateRun(runId: number, patch: Record<string, unknown>) {
   const keys = Object.keys(patch);
   if (!keys.length) return;
+  for (const k of keys) {
+    if (!RUNS_UPDATABLE_COLS.has(k)) {
+      throw new Error(
+        `updateRun: refusing to update unknown column "${k}". ` +
+          `If this is a new column, add it to RUNS_UPDATABLE_COLS.`,
+      );
+    }
+  }
   const sets = keys.map((k) => `${k} = ?`).join(", ");
   const values = keys.map((k) => (patch as Record<string, unknown>)[k]);
   db.prepare(`UPDATE runs SET ${sets} WHERE id = ?`).run(...values, runId);
@@ -208,10 +241,13 @@ export async function runImplementer(input: ImplementerInput): Promise<{
   if (!issueBudget.ok) {
     log.warn(
       "implementer",
-      `per-issue budget exceeded for #${input.issue.number} ($${issueBudget.spentUsd.toFixed(2)})`,
+      `per-issue budget exceeded for #${input.issue.number}: ` +
+        `$${issueBudget.spentUsd.toFixed(2)} across ${issueBudget.priorRuns} prior run(s) ` +
+        `(cap $${botConfig.budgets.perIssueUsd.toFixed(2)}). Likely crash-looping — inspect prior runs.`,
     );
     throw new Error(
-      `Per-issue budget exceeded for #${input.issue.number}`,
+      `Per-issue budget exceeded for #${input.issue.number} ` +
+        `($${issueBudget.spentUsd.toFixed(2)} across ${issueBudget.priorRuns} runs)`,
     );
   }
 

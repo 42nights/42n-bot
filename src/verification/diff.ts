@@ -44,9 +44,14 @@ async function intentToAddUntracked(cwd: string): Promise<void> {
     .map((s) => s.trim())
     .filter(Boolean);
   if (files.length === 0) return;
-  // Pass via `-z`-style chunks if we ever cross argv limits, but realistic
-  // bot diffs are small enough that a single call is fine.
-  await runCmd(["git", "add", "-N", "--", ...files], cwd);
+  // QA2: chunk to avoid OS ARG_MAX (~256KB on macOS). A target repo with a
+  // missing .gitignore can return 50k+ untracked paths. Without chunking the
+  // call throws E2BIG and the verification fails with a confusing error.
+  const CHUNK = 500;
+  for (let i = 0; i < files.length; i += CHUNK) {
+    const slice = files.slice(i, i + CHUNK);
+    await runCmd(["git", "add", "-N", "--", ...slice], cwd);
+  }
 }
 
 export function checkDiffSize(diffText: string, plan: Plan): CheckResult {
