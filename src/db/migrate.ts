@@ -74,6 +74,36 @@ export function runMigrations() {
 
     CREATE INDEX IF NOT EXISTS idx_phase_costs_run ON phase_costs(run_id, phase);
 
+    -- v0.3 crons: user-scheduled recurring actions (reviewer passes,
+    -- file-an-issue, etc). Scheduler ticks every 30s in the coordinator.
+    CREATE TABLE IF NOT EXISTS crons (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      schedule TEXT NOT NULL,                -- standard cron expression
+      action TEXT NOT NULL,                  -- "reviewer" | "fix_issue" | "send_otis"
+      payload_json TEXT NOT NULL,            -- action-specific args
+      repo TEXT,                             -- "owner/name" or NULL = first connected
+      enabled INTEGER NOT NULL DEFAULT 1,
+      last_run_at INTEGER,
+      next_run_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_crons_next_run ON crons(next_run_at);
+
+    CREATE TABLE IF NOT EXISTS cron_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cron_id INTEGER NOT NULL REFERENCES crons(id) ON DELETE CASCADE,
+      started_at INTEGER NOT NULL,
+      finished_at INTEGER,
+      ok INTEGER NOT NULL DEFAULT 0,
+      message TEXT,
+      run_id INTEGER                          -- when the cron spawned a run, link it
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_cron_runs_cron ON cron_runs(cron_id, started_at DESC);
+
     CREATE TABLE IF NOT EXISTS app_credentials (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       app_id INTEGER NOT NULL,

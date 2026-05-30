@@ -2,14 +2,19 @@
 
 // 'use client' — repo management requires SWR, toast, form state.
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { toast } from "sonner";
+import { motion, AnimatePresence } from "framer-motion";
 import { fetcher } from "@/lib/api-client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { OtisMark } from "@/components/icons/OtisMark";
 import { cn } from "@/lib/utils";
+
+const spring = { type: "spring" as const, stiffness: 320, damping: 36, mass: 0.8 };
 import {
   Trash2,
   Power,
@@ -280,7 +285,21 @@ function SettingsContent() {
   }
 
   if (!data) {
-    return <div className="p-10 text-sm text-[var(--fg-muted)]">Loading…</div>;
+    return (
+      <div className="max-w-3xl mx-auto px-8 py-10 space-y-10">
+        <Skeleton className="h-9 w-32" />
+        <div className="space-y-3">
+          <Skeleton className="h-5 w-24" />
+          <Skeleton className="h-24 w-full" />
+          <Skeleton className="h-16 w-full" />
+          <div className="space-y-2">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <Skeleton key={i} className="h-20 w-full" />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -365,14 +384,23 @@ function SettingsContent() {
             Connected ({data.connected.length})
           </h3>
           {data.connected.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-[var(--border)] p-10 text-center text-sm text-[var(--fg-muted)]">
-              No repos yet.
+            <div className="flex flex-col items-center justify-center py-16 gap-4 text-center rounded-lg border border-dashed border-[var(--border)]">
+              <OtisMark className="h-12 w-12 opacity-30" />
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-[var(--fg-muted)]">No repos yet</p>
+                <p className="text-xs text-[var(--fg-subtle)]">Install the GitHub App above or add one with a PAT.</p>
+              </div>
             </div>
           ) : (
             <div className="space-y-2">
+              <AnimatePresence initial={false}>
               {data.connected.map((r) => (
-                <div
+                <motion.div
                   key={r.id}
+                  initial={{ opacity: 0, y: -8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.98 }}
+                  transition={spring}
                   className="rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4"
                 >
                   <div className="flex items-start gap-3">
@@ -477,8 +505,9 @@ function SettingsContent() {
                       </Button>
                     </div>
                   </div>
-                </div>
+                </motion.div>
               ))}
+              </AnimatePresence>
             </div>
           )}
         </div>
@@ -645,8 +674,28 @@ export default function SettingsPage() {
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 function SectionHeading({ children }: { children: React.ReactNode }) {
+  const ref = useRef<HTMLHeadingElement>(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) setVisible(true); },
+      { threshold: 0.2 },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
   return (
-    <h2 className="font-serif text-xl tracking-tight mb-4">{children}</h2>
+    <motion.h2
+      ref={ref}
+      className="font-serif text-xl tracking-tight mb-4"
+      initial={{ opacity: 0, y: 6 }}
+      animate={visible ? { opacity: 1, y: 0 } : {}}
+      transition={{ duration: 0.2 }}
+    >
+      {children}
+    </motion.h2>
   );
 }
 

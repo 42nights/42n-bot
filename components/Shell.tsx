@@ -84,6 +84,7 @@ const NAV = [
   { href: "/", label: "Home" },
   { href: "/sessions", label: "Sessions" },
   { href: "/inbox", label: "Inbox" },
+  { href: "/crons", label: "Crons" },
   { href: "/settings", label: "Settings" },
 ] as const;
 
@@ -106,7 +107,7 @@ function NavStripBase({
   navQs: string;
 }) {
   return (
-    <nav className="h-11 px-6 flex items-end gap-1 border-b border-border bg-[var(--bg)]">
+    <nav className="top-nav-strip h-11 px-6 flex items-end gap-1 border-b border-border bg-[var(--bg)] shrink-0">
       {NAV.map(({ href, label }) => {
         const active =
           pathname === href || (href !== "/" && pathname.startsWith(href));

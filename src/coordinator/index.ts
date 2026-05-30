@@ -9,10 +9,12 @@ import { listLabeledIssues } from "../github/client";
 import { log } from "../shared/logger";
 import { consumeDispatch } from "./dispatch";
 import { activeRepos } from "../repo-store";
+import { tickScheduler } from "../cron/scheduler";
 
 const POLL_INTERVAL_MS = 60_000;
 const REVIEWER_INTERVAL_MS = botConfig.reviewer.intervalMinutes * 60_000;
 const DISPATCH_TICK_MS = 2_000;
+const CRON_TICK_MS = 30_000;
 const MAX_CONCURRENT_IMPLEMENTERS = 3;
 
 // C11: cap how many issues the implementer can drive in parallel. Each issue
@@ -168,6 +170,13 @@ async function main() {
       );
     }
   }, DISPATCH_TICK_MS);
+
+  // v0.3 crons: fire user-scheduled actions on a 30s heartbeat.
+  setInterval(() => {
+    tickScheduler().catch((err) =>
+      log.error("coord", `cron tick error: ${err}`),
+    );
+  }, CRON_TICK_MS);
 }
 
 if (typeof require !== "undefined" && require.main === module) {

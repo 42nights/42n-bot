@@ -4,16 +4,21 @@ import { use } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { toast } from "sonner";
+import { motion, AnimatePresence } from "framer-motion";
 import { fetcher } from "@/lib/api-client";
 import { NarrationStream } from "@/components/NarrationStream";
 import { SessionWorkspace } from "@/components/SessionWorkspace";
 import { CelebrationListener } from "@/components/CelebrationListener";
 import { Scrubber } from "@/components/Scrubber";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { useReplay } from "@/lib/replay";
 import { ArrowLeft, ExternalLink, GitPullRequest, Share2 } from "lucide-react";
 import { LiveDot } from "@/components/icons/LiveDot";
+import { PhaseCostBar } from "@/components/PhaseCostBar";
 import { cn } from "@/lib/utils";
 import type { EventRow } from "@/lib/narration";
+
+const spring = { type: "spring" as const, stiffness: 320, damping: 36, mass: 0.8 };
 
 type Run = {
   id: number;
@@ -78,7 +83,24 @@ export default function SessionPage({
 
   if (!data) {
     return (
-      <div className="p-10 text-sm text-[var(--fg-muted)]">Loading…</div>
+      <div className="flex flex-col h-[calc(100vh-6.25rem)]">
+        <div className="h-12 px-6 flex items-center gap-4 border-b border-border">
+          <Skeleton className="h-4 w-24" />
+          <Skeleton className="h-4 w-64" />
+        </div>
+        <div className="h-1 bg-[var(--bg-sunken)]" />
+        <div className="flex-1 grid grid-cols-1 md:grid-cols-[38%_62%]">
+          <div className="border-r border-border p-6 space-y-4">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Skeleton key={i} className={`h-10 ${i % 3 === 0 ? "w-3/4" : "w-full"}`} />
+            ))}
+          </div>
+          <div className="p-6 space-y-4">
+            <Skeleton className="h-8 w-48" />
+            <Skeleton className="h-32 w-full" />
+          </div>
+        </div>
+      </div>
     );
   }
   const { run, events, verdicts } = data;
@@ -137,6 +159,7 @@ function ReplayWrapper({
         isLive={isLive}
         runId={runId}
       />
+      <PhaseCostBar runId={run.id} />
       <PhaseStrip status={run.status} hasPr={!!run.pr_url} />
       <div className="flex-1 min-h-0 grid grid-cols-1 md:grid-cols-[38%_62%]">
         <aside className="border-r border-border min-h-0">
@@ -207,11 +230,20 @@ function SessionHeader({
         </Link>
         <div className="flex items-center gap-2 min-w-0">
           {isLive && <LiveDot active />}
-          <span className="text-sm text-[var(--fg-muted)]">
-            {isLive ? "Otis is working on" : "Otis worked on"}
-          </span>
+          <AnimatePresence mode="wait">
+            <motion.span
+              key={isLive ? "live" : "done"}
+              className="text-sm text-[var(--fg-muted)]"
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.18 }}
+            >
+              {isLive ? "Otis is working on" : "Otis worked on"}
+            </motion.span>
+          </AnimatePresence>
           <span className="text-sm font-medium text-[var(--fg)] truncate">
-            "{subject}"
+            &ldquo;{subject}&rdquo;
           </span>
         </div>
       </div>
@@ -251,18 +283,20 @@ function PhaseStrip({
 }) {
   const idx = phaseIndex(status, hasPr);
   return (
-    <div className="h-1 bg-[var(--bg-sunken)] flex">
+    <div className="h-1 bg-[var(--bg-sunken)] flex overflow-hidden">
       {PHASES.map((p, i) => (
-        <div
+        <motion.div
           key={p.key}
           className={cn(
-            "flex-1 transition-colors",
+            "flex-1",
             i < idx
               ? "bg-[var(--accent)]"
               : i === idx
                 ? "bg-[var(--accent)] opacity-50"
                 : "bg-transparent",
           )}
+          layout
+          transition={spring}
         />
       ))}
     </div>

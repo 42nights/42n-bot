@@ -136,6 +136,51 @@
   animation: otis-cursor 0.9s steps(2) infinite;
 }
 
+/* Skeleton shimmer */
+@keyframes skeleton-shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--bg-elev) 0%,
+    var(--bg-sunken) 40%,
+    var(--bg-elev) 80%
+  );
+  background-size: 800px 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+/* Button press micro-interaction */
+button:active:not(:disabled),
+[role="button"]:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* Sonner toast — use our token palette in dark mode */
+[data-sonner-toaster] {
+  --normal-bg: var(--bg-elev);
+  --normal-border: var(--border);
+  --normal-text: var(--fg);
+}
+
+/* Top nav overflow on mobile */
+nav.top-nav-strip {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+nav.top-nav-strip::-webkit-scrollbar {
+  display: none;
+}
+
+/* Textarea focus ring breathing */
+.prompt-textarea-wrap:focus-within {
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 22%, transparent);
+  transition: box-shadow 200ms ease;
+}
+
 /* Diff syntax — dark-mode friendly. */
 .diff-add {
   background-color: color-mix(in oklab, var(--accent) 12%, transparent);

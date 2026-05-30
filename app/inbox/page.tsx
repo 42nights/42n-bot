@@ -7,11 +7,16 @@ import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import useSWR from "swr";
 import { toast } from "sonner";
+import { motion, AnimatePresence } from "framer-motion";
 import { fetcher, sendChat, listThreads, createThread, getMessages } from "@/lib/api-client";
 import { useRepoScope } from "@/lib/repo-scope";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { OtisMark } from "@/components/icons/OtisMark";
 import { cn } from "@/lib/utils";
+
+const spring = { type: "spring" as const, stiffness: 320, damping: 36, mass: 0.8 };
 import {
   Sparkles,
   Loader2,
@@ -99,7 +104,11 @@ function InboxContent() {
           >
             {t === "queue" ? "Queue" : "Conversation"}
             {tab === t && (
-              <span className="absolute bottom-0 left-0 right-0 h-px bg-[var(--accent)]" />
+              <motion.span
+                layoutId="inbox-tab-underline"
+                className="absolute bottom-0 left-0 right-0 h-px bg-[var(--accent)]"
+                transition={spring}
+              />
             )}
           </button>
         ))}
@@ -155,7 +164,26 @@ function QueueTab() {
   }
 
   if (!data) {
-    return <div className="text-sm text-[var(--fg-muted)]">Loading…</div>;
+    return (
+      <div className="space-y-4">
+        <div className="flex items-end justify-between">
+          <div className="space-y-2">
+            <Skeleton className="h-7 w-32" />
+            <Skeleton className="h-4 w-72" />
+          </div>
+          <div className="flex gap-1">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Skeleton key={i} className="h-8 w-16" />
+            ))}
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Skeleton key={i} className="h-28" />
+          ))}
+        </div>
+      </div>
+    );
   }
 
   const stats = {
@@ -197,7 +225,7 @@ function QueueTab() {
               key={f}
               onClick={() => setFilter(f)}
               className={cn(
-                "px-3 h-8 rounded-md text-xs uppercase tracking-wider transition-colors",
+                "relative px-3 h-8 rounded-md text-xs uppercase tracking-wider transition-colors",
                 filter === f
                   ? "bg-[var(--fg)] text-[var(--bg)]"
                   : "text-[var(--fg-muted)] hover:text-[var(--fg)] hover:bg-[var(--bg-elev)]",
@@ -221,16 +249,28 @@ function QueueTab() {
       {filtered.length === 0 ? (
         <IssueEmptyState filter={filter} hasRepos={data.repos > 0} />
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <motion.div
+          className="grid grid-cols-1 md:grid-cols-2 gap-3"
+          initial="hidden"
+          animate="visible"
+          variants={{ visible: { transition: { staggerChildren: 0.04 } } }}
+        >
           {filtered.map((i) => (
-            <IssueCard
+            <motion.div
               key={`${i.repo}#${i.number}`}
-              issue={i}
-              fixing={fixing === `${i.repo}#${i.number}`}
-              onFix={() => fixIt(i)}
-            />
+              variants={{
+                hidden: { opacity: 0, y: 8 },
+                visible: { opacity: 1, y: 0, transition: spring },
+              }}
+            >
+              <IssueCard
+                issue={i}
+                fixing={fixing === `${i.repo}#${i.number}`}
+                onFix={() => fixIt(i)}
+              />
+            </motion.div>
           ))}
-        </div>
+        </motion.div>
       )}
     </>
   );
@@ -247,21 +287,35 @@ function IssueCard({
 }) {
   const active = isActive(issue);
   const done = isDone(issue);
+  const [pulsing, setPulsing] = useState(false);
+
+  function handleFix() {
+    setPulsing(true);
+    setTimeout(() => setPulsing(false), 1000);
+    onFix();
+  }
+
   const severityClass: Record<string, string> = {
-    high: "bg-red-50 text-red-700 border-red-200",
-    medium: "bg-amber-50 text-amber-800 border-amber-200",
-    low: "bg-blue-50 text-blue-700 border-blue-200",
+    high: "bg-[var(--fail-soft)] text-[var(--fail)] border-[var(--fail)]",
+    medium: "bg-[var(--warn-soft)] text-[var(--warn)] border-[var(--warn)]",
+    low: "bg-[var(--plan-soft)] text-[var(--plan)] border-[var(--plan)]",
   };
   return (
-    <div
+    <motion.div
       className={cn(
         "rounded-xl border p-4 transition-shadow hover:shadow-sm",
-        active
-          ? "border-violet-300 bg-violet-50/40"
-          : done
-            ? "border-emerald-200 bg-emerald-50/30"
-            : "border-[var(--border)] bg-[var(--bg)]",
+        pulsing
+          ? "border-[var(--plan)]"
+          : active
+            ? "border-[var(--plan-soft)] bg-[var(--plan-soft)]"
+            : done
+              ? "border-[var(--accent-soft)] bg-[var(--accent-soft)]"
+              : "border-[var(--border)] bg-[var(--bg)]",
       )}
+      animate={pulsing ? {
+        boxShadow: ["0 0 0 0 transparent", "0 0 0 4px color-mix(in oklab, var(--plan) 30%, transparent)", "0 0 0 0 transparent"],
+      } : {}}
+      transition={{ duration: 0.9 }}
     >
       <div className="flex items-start gap-3">
         <div className="flex-1 min-w-0">
@@ -313,12 +367,12 @@ function IssueCard({
         <IssueActionButton
           issue={issue}
           fixing={fixing}
-          onFix={onFix}
+          onFix={handleFix}
           active={active}
           done={done}
         />
       </div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -451,26 +505,48 @@ function IssueEmptyState({
 }) {
   if (!hasRepos) {
     return (
-      <div className="rounded-xl border border-dashed border-[var(--border)] p-10 text-center text-sm text-[var(--fg-muted)]">
-        No repos connected.{" "}
-        <Link href="/settings" className="underline text-[var(--fg)]">
-          Head to Settings
-        </Link>{" "}
-        to install the GitHub App.
+      <div className="flex flex-col items-center justify-center py-20 gap-4 text-center">
+        <OtisMark className="h-12 w-12 opacity-30" />
+        <div className="space-y-1">
+          <p className="text-sm font-medium text-[var(--fg-muted)]">No repos connected</p>
+          <p className="text-xs text-[var(--fg-subtle)]">Install the GitHub App to get started.</p>
+        </div>
+        <Link
+          href="/settings"
+          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--accent)] text-[var(--accent-fg)] text-xs font-medium hover:opacity-90 transition-opacity"
+        >
+          Go to Settings
+        </Link>
       </div>
     );
   }
-  const hint =
-    filter === "all"
-      ? "No bot-found or bot-please issues yet. Click Find Issues on a repo card."
-      : filter === "found"
-        ? "Reviewer hasn't filed anything yet."
-        : filter === "active"
-          ? "Nothing in flight right now."
-          : "No fixes have landed yet.";
+
+  const hints: Record<typeof filter, { message: string; sub: string }> = {
+    all: {
+      message: "No issues yet",
+      sub: "Click Find Issues on a repo card to have Otis scan for bugs.",
+    },
+    found: {
+      message: "Nothing found yet",
+      sub: "Otis hasn't filed any issues from its last review.",
+    },
+    active: {
+      message: "Nothing in flight",
+      sub: "No sessions are running right now.",
+    },
+    done: {
+      message: "Nothing shipped yet",
+      sub: "Completed fixes will appear here.",
+    },
+  };
+  const { message, sub } = hints[filter];
   return (
-    <div className="rounded-xl border border-dashed border-[var(--border)] p-10 text-center text-sm text-[var(--fg-muted)]">
-      {hint}
+    <div className="flex flex-col items-center justify-center py-20 gap-4 text-center">
+      <OtisMark className="h-12 w-12 opacity-30" />
+      <div className="space-y-1">
+        <p className="text-sm font-medium text-[var(--fg-muted)]">{message}</p>
+        <p className="text-xs text-[var(--fg-subtle)] max-w-64">{sub}</p>
+      </div>
     </div>
   );
 }

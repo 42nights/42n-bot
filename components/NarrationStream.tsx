@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   translate,
   coalesceNarration,
@@ -10,6 +11,8 @@ import {
 } from "@/lib/narration";
 import { OtisMark } from "./icons/OtisMark";
 import { cn } from "@/lib/utils";
+
+const spring = { type: "spring" as const, stiffness: 320, damping: 36, mass: 0.8 };
 
 type TimedLine = NarrationLine & { id: number; ts: number };
 
@@ -104,10 +107,21 @@ export function NarrationStream({
       <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
         {renderedLines.length === 0 ? (
           <div className="text-sm text-[var(--fg-muted)] italic py-10 text-center">
-            Otis hasn't said anything yet.
+            Otis hasn&apos;t said anything yet.
           </div>
         ) : (
-          renderedLines.map((l) => <Turn key={l.id} line={l} />)
+          <AnimatePresence initial={false}>
+            {renderedLines.map((l) => (
+              <motion.div
+                key={l.id}
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={spring}
+              >
+                <Turn line={l} />
+              </motion.div>
+            ))}
+          </AnimatePresence>
         )}
         <div ref={bottomRef} />
       </div>

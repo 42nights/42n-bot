@@ -21,6 +21,7 @@ import { runReproduce } from "../claude/phases/reproduce";
 import { runDesign } from "../claude/phases/design";
 import { runReplan } from "../claude/phases/replan";
 import { parseImplementerRequests } from "../claude/parse-requests";
+import { recordPhaseCost } from "../claude/phases/cost-tracker";
 import type {
   Understanding,
   CriticV2Report,
@@ -403,6 +404,7 @@ export async function runImplementer(input: ImplementerInput): Promise<{
 
     // ── v2 §6 — PLAN, grounded in understanding + repro/design ──────────
     emitEvent(runId, "plan.started", {});
+    const planStartedAt = Date.now();
     const planRes = await runStructuredPlan({
       runId,
       prompt: planPromptV2({
@@ -417,6 +419,15 @@ export async function runImplementer(input: ImplementerInput): Promise<{
       costBudgetUsd: botConfig.budgets.perRunUsd,
       allowedTools: ["Read", "Grep", "Glob"],
       permissionMode: "dontAsk",
+    });
+    recordPhaseCost({
+      runId,
+      phase: "plan",
+      costUsd: planRes.ok
+        ? planRes.costUsd
+        : (planRes.partialCostUsd ?? 0),
+      durationMs: Date.now() - planStartedAt,
+      ok: planRes.ok,
     });
     if (!planRes.ok) {
       // A8: capture the partial cost even on planner failure.
@@ -522,6 +533,7 @@ export async function runImplementer(input: ImplementerInput): Promise<{
         emitEvent(runId, "implement.started", {});
       }
 
+      const implStartedAt = Date.now();
       const impl = await runClaudeCode({
         runId,
         mode: "implement",
@@ -535,6 +547,14 @@ export async function runImplementer(input: ImplementerInput): Promise<{
       });
       if (impl.ok) lastSessionId = impl.sessionId;
       incCost(runId, impl.ok ? impl.costUsd : (impl.partialCostUsd ?? 0));
+      recordPhaseCost({
+        runId,
+        phase: "implement",
+        attempt,
+        costUsd: impl.ok ? impl.costUsd : (impl.partialCostUsd ?? 0),
+        durationMs: Date.now() - implStartedAt,
+        ok: impl.ok,
+      });
 
       // v2 §7.1: parse the implementer's output for plan-revision requests.
       // If found and we haven't blown the cap, run REPLAN and loop without
@@ -612,6 +632,7 @@ export async function runImplementer(input: ImplementerInput): Promise<{
 
       // 4. Verify
       updateRun(runId, { status: "verifying" });
+      const verifyStartedAt = Date.now();
       lastVerdict = await runVerification({
         runId,
         attempt,
@@ -623,6 +644,18 @@ export async function runImplementer(input: ImplementerInput): Promise<{
         understanding,
         acceptancePaths,
         useCriticV2: true,
+      });
+      recordPhaseCost({
+        runId,
+        phase: "verify",
+        attempt,
+        // Verification doesn't have its own Claude spend (acceptance + runtime
+        // are shell runs; critic_v2 cost is folded into the run total via
+        // checkCriticV2 → runClaudeHeadless). Logging duration here is the
+        // useful signal.
+        costUsd: 0,
+        durationMs: Date.now() - verifyStartedAt,
+        ok: lastVerdict.pass,
       });
 
       // A6: if mutation-light blew up the worktree, bail immediately — no

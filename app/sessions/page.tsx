@@ -3,11 +3,15 @@
 import { Suspense } from "react";
 import useSWR from "swr";
 import Link from "next/link";
+import { motion, AnimatePresence } from "framer-motion";
 import { fetcher } from "@/lib/api-client";
 import { useRepoScope } from "@/lib/repo-scope";
 import { LiveDot } from "@/components/icons/LiveDot";
 import { OtisMark } from "@/components/icons/OtisMark";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { cn } from "@/lib/utils";
+
+const spring = { type: "spring" as const, stiffness: 320, damping: 36, mass: 0.8 };
 
 type Run = {
   id: number;
@@ -35,7 +39,17 @@ const ACTIVE = new Set([
 export default function SessionsPage() {
   return (
     <Suspense
-      fallback={<div className="p-10 text-sm text-[var(--fg-muted)]">Loading…</div>}
+      fallback={
+        <div className="max-w-5xl mx-auto px-8 py-12 space-y-6">
+          <Skeleton className="h-8 w-40" />
+          <Skeleton className="h-4 w-64" />
+          <div className="space-y-2">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Skeleton key={i} className="h-16 w-full" />
+            ))}
+          </div>
+        </div>
+      }
     >
       <SessionsList />
     </Suspense>
@@ -66,13 +80,25 @@ function SessionsList() {
 
       {active.length > 0 && (
         <section className="mb-10">
-          <h2 className="text-[11px] uppercase tracking-[0.18em] text-[var(--fg-muted)] mb-3">
+          <h2 className="text-[11px] uppercase tracking-[0.18em] text-[var(--fg-muted)] mb-3 flex items-center gap-2">
+            <span className="otis-live-dot inline-block w-1.5 h-1.5 rounded-full bg-[var(--accent)]" />
             Live
           </h2>
           <div className="space-y-2">
-            {active.map((r) => (
-              <SessionRow key={r.id} run={r} live />
-            ))}
+            <AnimatePresence initial={false}>
+              {active.map((r) => (
+                <motion.div
+                  key={r.id}
+                  layoutId={`session-row-${r.id}`}
+                  initial={{ opacity: 0, y: -6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={spring}
+                >
+                  <SessionRow run={r} live />
+                </motion.div>
+              ))}
+            </AnimatePresence>
           </div>
         </section>
       )}
@@ -81,18 +107,57 @@ function SessionsList() {
         <h2 className="text-[11px] uppercase tracking-[0.18em] text-[var(--fg-muted)] mb-3">
           History
         </h2>
-        {done.length === 0 ? (
+        {done.length === 0 && active.length === 0 ? (
+          <SessionsEmptyState />
+        ) : done.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border p-10 text-center text-sm text-[var(--fg-muted)]">
             No completed sessions yet.
           </div>
         ) : (
           <div className="space-y-2">
-            {done.map((r) => (
-              <SessionRow key={r.id} run={r} />
-            ))}
+            <AnimatePresence initial={false}>
+              {done.map((r, i) => (
+                <motion.div
+                  key={r.id}
+                  layoutId={`session-row-${r.id}`}
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.98 }}
+                  transition={{ ...spring, delay: Math.min(i * 0.03, 0.18) }}
+                >
+                  <SessionRow run={r} />
+                </motion.div>
+              ))}
+            </AnimatePresence>
           </div>
         )}
       </section>
+    </div>
+  );
+}
+
+function SessionsEmptyState() {
+  return (
+    <div className="flex flex-col items-center justify-center py-20 gap-4 text-center">
+      <motion.div
+        className="relative"
+        animate={{ boxShadow: ["0 0 0 0 transparent", "0 0 0 8px color-mix(in oklab, var(--accent) 20%, transparent)", "0 0 0 0 transparent"] }}
+        transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
+      >
+        <OtisMark className="h-16 w-16 opacity-40" />
+      </motion.div>
+      <div className="space-y-1.5">
+        <p className="text-sm font-medium text-[var(--fg-muted)]">No sessions yet</p>
+        <p className="text-xs text-[var(--fg-subtle)] max-w-64">
+          Drop a <code className="font-mono text-[11px] bg-[var(--bg-sunken)] px-1 rounded">bot-please</code> label on an issue, or send a task from the home page.
+        </p>
+      </div>
+      <Link
+        href="/"
+        className="mt-2 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--accent)] text-[var(--accent-fg)] text-xs font-medium hover:opacity-90 transition-opacity"
+      >
+        Send a task
+      </Link>
     </div>
   );
 }

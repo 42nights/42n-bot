@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { Command } from "cmdk";
+import { motion, AnimatePresence } from "framer-motion";
 import useSWR from "swr";
 import { fetcher } from "@/lib/api-client";
 import { formatRelative } from "@/lib/utils";
@@ -126,14 +127,18 @@ export function CommandPalette() {
     router.push(href);
   }
 
-  if (!open) return null;
-
   return (
-    <div
+    <AnimatePresence>
+    {open && (
+    <motion.div
       role="dialog"
       aria-modal="true"
       aria-label="Command palette"
       className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh]"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.15 }}
     >
       {/* Backdrop */}
       <div
@@ -143,7 +148,13 @@ export function CommandPalette() {
       />
 
       {/* Panel */}
-      <div className="relative w-full max-w-xl mx-4 rounded-xl border border-[var(--border-strong)] bg-[var(--bg-elev)] shadow-2xl overflow-hidden">
+      <motion.div
+        className="relative w-full max-w-xl mx-4 rounded-xl border border-[var(--border-strong)] bg-[var(--bg-elev)] shadow-2xl overflow-hidden"
+        initial={{ scale: 0.96, opacity: 0, y: -8 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
+        exit={{ scale: 0.96, opacity: 0, y: -8 }}
+        transition={{ type: "spring", stiffness: 320, damping: 36, mass: 0.8 }}
+      >
         <Command
           className="flex flex-col"
           onKeyDown={(e) => {
@@ -269,7 +280,9 @@ export function CommandPalette() {
             </Command.Group>
           </Command.List>
         </Command>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
+    )}
+    </AnimatePresence>
   );
 }
