@@ -1,23 +1,66 @@
-# 42n-bot · by 42nights Inc.
+# Otis · the AI engineer at 42nights
 
-An overnight autonomous coding agent for GitHub. Tag an issue `bot-please`, walk away, wake up to a PR you can read in a minute and merge in two — or to a transparent "I tried, here's where I got stuck" comment if it couldn't.
+> Reads issues. Writes PRs. Asks before doing anything risky.
 
-The whole architecture is organized around one insight: **the model can write the code; the hard part is proving it actually works.** Everything between the issue and the open PR is a verification harness that doesn't trust the agent's self-report.
+Otis is an autonomous coding agent that lives on your dashboard. Drop a `bot-please` label on a GitHub issue (or click **Fix it** from his Inbox) and walk away — wake up to a PR you can read in a minute and merge in two, or a transparent "I tried, here's where I got stuck" comment if the harness couldn't be satisfied.
 
-![Live dashboard](docs/screenshots/live.png)
+The architecture is organized around one insight: **the model can write the code; the hard part is proving it actually works.** Everything between the issue and the open PR is a verification harness that doesn't trust the agent's self-report.
 
-## What it does
+![Home](docs/screenshots/home.png)
 
-| Surface | Behavior |
-|---|---|
-| **Implementer** | Picks up issues tagged `bot-please`. Plans → implements → verifies → iterates up to N times → opens a PR with a structured body. If the harness can't be satisfied, the PR ships with `bot-needs-review` and a verification report explaining the gap. |
-| **Reviewer** | Walks the codebase on a cron, identifies up to 5 issue candidates per pass (bugs, missing tests, missing docs, code smells, security, perf, a11y). Embedding-based dedupe (cosine ≥ 0.78) against the existing open issue set. Opens at most 3 new issues per pass under the `bot-found` label. |
-| **Chat** | Ask the bot what it's been doing. RAG over the bot's own run-and-event log, with run-id citations. |
-| **Dashboard** | Live activity feed via SSE, filterable runs table, per-run detail with full event stream + verdict-per-iteration + diff viewer. |
+---
+
+## What you actually do
+
+1. Open http://localhost:3000.
+2. Click **Create GitHub App** (one click on github.com, App appears in your account) → **Install** on the repos you want Otis on.
+3. Either:
+   - Type into the **Send Otis to work** box on the home page, or
+   - Open the **Inbox**, find a `bot-found` issue Otis has surfaced from a scan, and click **Fix it**, or
+   - Label any GitHub issue `bot-please` from github.com directly.
+4. Watch the session unfold live — narration on the left, code/diff/terminal/PR on the right.
+
+That's it. No env-file editing. No PATs. No webhooks-during-dev tunnel setup. The polling coordinator picks new work up within 60s; the dispatch channel routes the **Fix it** button to a 2s pickup.
+
+---
+
+## The product surface
+
+### The session workspace — watching Otis work
+
+Each session is a split-pane workspace. Otis's narration on the left translates raw events into engineering language; the right pane is a 5-tab artifact view: **Plan / Code / Diff / Terminal / PR**. Tabs auto-advance with the phase; you can pin one via `?tab=`.
+
+![Session workspace](docs/screenshots/session-workspace.png)
+
+The narration is fed by `lib/narration.ts` — a pure translator that turns `implement.tool_use { name: "Edit", input: { file_path: "src/foo.ts" } }` into *"Editing `src/foo.ts`."*. Successful verification checks are skipped (noise); failures get system-level annotation. Same-file edits within 8 seconds coalesce into one bubble whose timestamp updates in place.
+
+When the run terminates, a 56px **time-travel scrubber** appears at the bottom. Drag the handle, hit play, watch the agent's session replay at 1×/2×/4×/10× — phase ticks under the track snap to plan/implement/verify/PR moments. Every session has a `/sessions/{id}/share` URL that opens to a public read-only view with auto-generated open-graph cards for iMessage/Slack unfurls.
+
+### The inbox — every issue Otis can see
+
+A live grid of every `bot-found` (Otis filed it himself) and `bot-please` (someone tagged it) issue across every connected repo, joined with local run state. Filter pills for All / Found / Active / Done. One-click **Fix it** labels the issue and pokes the coordinator's dispatch channel.
+
+![Inbox](docs/screenshots/inbox.png)
+
+When a session for an issue is in flight, the card lights up violet with the current phase. When the PR is open, it links there directly. When the run failed, it offers a one-click re-dispatch.
+
+### The sessions list — history
+
+![Sessions](docs/screenshots/sessions.png)
+
+Active sessions float to the top. Cost, PR number, status, time relative — all in the row. Click in for the workspace.
+
+### Settings — repos, theme, env
+
+Everything from the GitHub App install state to the env-var matrix lives here. Repos can be cloned from the UI directly, paused per-repo, removed, or have their local clone path overridden.
+
+![Settings](docs/screenshots/settings.png)
+
+---
 
 ## The verification harness (the centerpiece)
 
-The thing every "agent that writes code" project gets wrong: **trusting the model's `completed: true` flag.** The bot doesn't.
+Most "agent that writes code" projects trust the model's `completed: true` flag. Otis doesn't.
 
 Eight checks run between every implementation attempt and the PR:
 
@@ -26,213 +69,204 @@ Eight checks run between every implementation attempt and the PR:
 | 1 | **Typecheck** | ✅ | `tsc --noEmit` / `cargo check` / `mypy` / `go vet` — autodetected per repo. |
 | 2 | **Existing tests** | ✅ | The whole suite. Catches collateral damage to unrelated code. |
 | 3 | **Plan tests added** | ✅ | Each `tests_to_add_or_update` path in the plan must appear in the diff. |
-| 4 | **Mutation-light** | ✅ | Stash the impl, restore *only* the new tests, re-run — they MUST fail. Pop the stash, re-run — they MUST pass. Proves the tests are exercising the change, not just rubber-stamping it. |
+| 4 | **Mutation-light** | ✅ | Stash the impl, restore *only* the new tests, re-run — they **must fail**. Pop the stash, re-run — they **must pass**. Proves the tests are exercising the change, not just rubber-stamping it. |
 | 5 | **Lint** | ⚠️ | Detected from repo config. Soft gate. |
-| 6 | **Diff size** | ⚠️ | Reject diffs > 1000 LOC unless the plan said `complexity: large`. |
-| 7 | **Banned patterns** | ✅ | `// @ts-ignore`, `eslint-disable-next-line`, `it.skip`, `xit`, `describe.skip`. The bot doesn't get to silence the rules. |
-| 8 | **Critic** | ⚠️ | Separate Claude Haiku call with no skin in the game. Reads the diff + issue + plan and returns `{implements_issue, test_depth, hidden_bugs[], merge_confidence 0-100, one_line_summary}`. Fails the run if confidence < 60, any hidden bug is severity:high, or implementation isn't "yes." |
+| 6 | **Diff size** | ✅ | Capped at 1000 lines (configurable), 2× for `complexity: large` plans. |
+| 7 | **Banned patterns** | ✅ | `@ts-ignore`, `it.skip`, `describe.skip`, `xit`, `eslint-disable-next-line`. False-positive guard for context-only diff lines. |
+| 8 | **Critic** | ⚠️ | Claude Haiku reviews the diff against the issue with `tool_use` JSON output. Confidence ≥ 60 + `implements_issue === "yes"` + no high-severity hidden-bug flags to pass. Soft gate, but its verdict is in the PR body. |
 
-Failed verification triggers an iteration with structured failure feedback (max 3 by default). If iterations exhaust, the PR opens anyway under `bot-needs-review` with a verification report explaining what blocked it — Ayaan's stated preference over silent confident garbage.
+If hard gates fail, the implementer iterates (up to 3 attempts). If they still fail, the PR ships under `bot-needs-review` with a full verification report.
 
-![Run detail with verdict + diff](docs/screenshots/run-detail.png)
-
-## Stack
-
-- **Next.js 16** (App Router, Turbopack) — dashboard + API + SSE
-- **TypeScript strict**, **Tailwind 3**, shadcn-style primitives
-- **better-sqlite3** — one file at `./data/bot.db`. `runs`, `events`, `artifacts`, `verdicts`, `corpus_chunks`, `chat_*`.
-- **Claude Code CLI** (`@anthropic-ai/claude-code`) — wrapped via `execa` with stream-json parsing, hard timeout, cost budget enforcement, three hang heuristics
-- **`@octokit/rest`** + GitHub webhooks (HMAC-SHA256 signature verify, raw-body capture, constant-time compare) + polling fallback
-- **`simple-git`** — git worktrees instead of full clones; ~10× faster per issue; auto-reaped after 7 days
-- **OpenAI `text-embedding-3-small`** — reviewer dedupe + chat corpus
-- **Anthropic Claude Opus 4.7** (chat) + **Claude Haiku 4.5** (critic) — model split chosen for cost/latency
-- **`vitest`** — 28 unit tests on the parts that matter (signature verify, banned patterns, diff/plan-tests math, dedupe, PR body, worktree guard)
+---
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ Coordinator daemon (Node + better-sqlite3)                      │
-│                                                                 │
-│   Implementer loop                                              │
-│     pickup → claim (label) → worktree                           │
-│     → plan (Claude Code, --json-schema)                         │
-│     → implement (Claude Code, --output-format stream-json)      │
-│     → verify (8 checks, see above)                              │
-│     → iterate up to N times w/ structured feedback              │
-│     → push branch, open PR with structured body                 │
-│                                                                 │
-│   Reviewer loop (every 6h or on demand)                         │
-│     → walk codebase                                             │
-│     → propose ≤5 issue candidates                               │
-│     → embedding dedupe against open issues                      │
-│     → open ≤3 new, comment on duplicates                        │
-│                                                                 │
-│   State (SQLite, single file)                                   │
-│     runs · events · artifacts · verdicts · corpus_chunks        │
-│     chat_threads · chat_messages                                │
-│                                                                 │
-│   API (Next.js routes)                                          │
-│     GET  /api/runs                  list + 24h rollup           │
-│     GET  /api/runs/[id]             detail + verdicts + events  │
-│     GET  /api/runs/[id]/events      SSE live stream             │
-│     GET  /api/runs/[id]/diff        unified diff                │
-│     POST /api/runs/[id]/cancel      soft cancel                 │
-│     POST /api/github/webhook        signed inbound events       │
-│     POST /api/admin/trigger         manual implementer/reviewer │
-│     POST /api/chat                  ask the bot                 │
-│     GET  /api/repos                 config snapshot             │
-└─────────────────────────────────────────────────────────────────┘
-```
+### Three processes, one DB
 
-## Start
+- **Dashboard** — Next.js 16 (App Router, Turbopack) on :3000. Render + REST + SSE.
+- **Coordinator** — long-running Node process (bundled via esbuild). Polls GitHub every 60s, drains the dispatch channel on a 2s tick, runs the reviewer on its schedule, owns worktree recovery.
+- **Claude Code subprocess** — spawned per implementer phase with `acceptEdits` permission and an allow-listed tool set scoped to plan vs implement vs critic.
+
+All three read/write the same `better-sqlite3` DB at `data/bot.db` — single source of truth for runs, events, verdicts, artifacts, repos, app credentials, corpus chunks, chat threads.
+
+`npm run go` starts the dashboard + coordinator side-by-side under `concurrently`.
+
+### The agent identity
+
+The agent is **Otis**. He has a monogram avatar (a serif "O"), a one-line bio (*"AI engineer. Reads issues, writes PRs, asks before doing anything risky."*), and a voice in copy — terse, specific, backticks around filenames, no exclamation points, no emoji unless the user uses one first. The terminology is collaborator language: *sessions* not *runs*, *Otis edited `foo.ts`* not *implement.tool_use*, *needs your eyes* not *needs-review*.
+
+### GitHub App auto-install
+
+You don't paste a PAT. The **Create GitHub App** button serves a manifest form that pre-fills github.com/settings/apps/new with the right scopes (Contents/Issues/Pull requests/Metadata + Workflows R/W). One approve click on github.com, GitHub redirects back with a one-time exchange code, the callback POSTs to `/app-manifests/{code}/conversions` to mint full credentials, and we persist them to the `app_credentials` singleton table. Installation-token caching + per-repo routing via `ghFor(owner, repo)`.
+
+### Local embeddings by default
+
+Reviewer dedupe + chat corpus search use `Xenova/all-MiniLM-L6-v2` via `@huggingface/transformers` in-process (~25MB one-time download, 384-dim vectors, ~50ms/embed). `OPENAI_API_KEY` is fully optional now — set `USE_OPENAI_EMBEDDINGS=1` only if you want to swap back to `text-embedding-3-small`.
+
+### Claude Code CLI for everything
+
+No `ANTHROPIC_API_KEY` required. Planner, implementer, critic, and the chat synthesizer all run through `claude -p` subprocesses using the CLI's OAuth login. `spawnEnv()` strips `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` from the child env so a stale key in your shell doesn't override the CLI's keychain credentials.
+
+---
+
+## Install + run
 
 ```bash
-nvm use                                  # node 22+
+# 1. Clone and install
+git clone https://github.com/42nights/42n-bot.git
+cd 42n-bot
 npm install
-cp .env.local.example .env.local         # ANTHROPIC, OPENAI, GITHUB tokens
-npm run migrate
-npm run seed:demo                        # populates dashboard with sample runs
 
-# Dashboard (always-on; sources its data from the bot's SQLite)
-npm run dev                              # http://localhost:3000
+# 2. Make sure the Claude CLI is logged in
+claude   # opens REPL → /login → approve in browser → Ctrl+D
 
-# Coordinator daemon (the long-running process)
-REPO_DIR=/path/to/the/repo/main/clone npm run bot
+# 3. Optional .env.local (everything has sensible defaults)
+cp .env.local.example .env.local
+# Only GITHUB_TOKEN is needed if you skip the GitHub App auto-install.
+
+# 4. Start everything
+npm run go
 ```
 
-For inbound webhooks during dev: run a `cloudflared tunnel --url http://localhost:3000`, register the resulting URL + your `GITHUB_WEBHOOK_SECRET` on the GitHub repo's webhook page. Polling runs alongside (60s) so the bot survives webhook outages.
+Then http://localhost:3000 → **Create GitHub App** → **Install** on a repo → label an issue.
 
 ```bash
-npm test                                 # 28 vitest cases
-npm run typecheck                        # tsc --noEmit
-npm run build                            # next build
-npm run trigger:implementer              # CLI fire on a specific issue
-npm run trigger:reviewer                 # CLI fire one reviewer pass
+npm test           # 54 vitest cases
+npm run typecheck  # tsc --noEmit
+npm run build      # next build + esbuild bot bundle
+npm run build:bot  # just the bot bundle
 ```
 
 ## Env
 
+Everything is optional except a way to reach GitHub. The GitHub App install flow handles that with zero env vars.
+
 | Variable | Required? | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | yes | Claude Code subprocess + critic + chat |
-| `OPENAI_API_KEY` | yes | Embeddings (reviewer dedupe + chat corpus) |
-| `GITHUB_TOKEN` | yes | Fine-grained PAT with issues + PR write |
-| `GITHUB_WEBHOOK_SECRET` | yes | HMAC secret shared with the GitHub webhook |
-| `CLAUDE_CODE_PATH` | no | Override if `claude` isn't on PATH |
-| `REPO_DIR` | for the daemon | Path to the main checkout that bot worktrees branch off of |
-| `WORKTREE_ROOT` | no | Where to park worktrees (default `~/.42n-bot/worktrees`) |
-| `DASHBOARD_URL` | no | Deep-link target in PR bodies |
-| `DEMO_MODE` | no | Set to `1` to seed sample data instead of hitting GitHub |
-
-## All runs
-
-The filterable runs table at `/runs` is the operational view — every implementer + reviewer run, newest first, scoped by status:
-
-![Runs table](docs/screenshots/runs.png)
-
-## Chat over the run log
-
-`/chat` is a thin RAG surface over the bot's own event log. Every terminal run gets summarized into a markdown block, embedded via `text-embedding-3-small`, persisted to `corpus_chunks`, and queried per-message. Answers cite specific run IDs back to their detail pages.
-
-![Chat surface](docs/screenshots/chat-empty.png)
-
-## Repos + policy
-
-The bot's policy is file-driven (`bot.config.ts`). The `/repos` page exposes the live shape: which repos it's watching, labels, budgets, reviewer cadence, dedupe threshold.
-
-![Repos + policy snapshot](docs/screenshots/repos.png)
-
-## Why this architecture
-
-**Minimum scaffold, maximum verification.** Borrowed from [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent), which scores >74% on SWE-bench Verified with ~100 lines of Python and bash as its only tool. The lesson is that capable models don't need fancy orchestration — they need a *grader* they can't bullshit. We invest engineering attention in the harness, not in the agent loop.
-
-**Why Claude Code CLI as the driver?** It already implements the inner planning + tool-use + file-edit loop. We wrap a tool that already nails the inner game and own the outer game: workspace isolation, verification, iteration, PR opening, cost tracking, audit.
-
-**Why git worktrees instead of clones?** ~10× faster spinup per issue (worktrees share `.git`), instant branch creation, working dir always clean. Tradeoff: needs the orphan reaper (every coordinator startup + every 6h) to keep disk usage bounded.
-
-**Why two refusal paths in the implementer?**
-1. *Planner aborts* — bot examines the issue and decides it's too ambiguous, too large, or asks for something dangerous (disabling tests). Posts a comment with the reason, drops the claim label, exits clean. The bot is allowed to say no.
-2. *Iteration exhausted* — implementation never satisfies the harness. PR opens anyway under `bot-needs-review` with a full verification report. Ayaan's stated preference: "rather open a transparent failure than ship a confident broken thing."
+| `GITHUB_TOKEN` | only if you skip the App install | Fine-grained PAT fallback |
+| `CLAUDE_CODE_PATH` | no | Override if `claude` isn't on `PATH` (defaults to `claude`) |
+| `REPOS_ROOT` | no | Where to clone connected repos (default `~/.42n-bot/repos`) |
+| `WORKTREE_ROOT` | no | Where to park bot worktrees (default `~/.42n-bot/worktrees`) |
+| `DASHBOARD_URL` | no | Deep-link target in PR bodies (default `http://localhost:3000`) |
+| `USE_OPENAI_EMBEDDINGS` | no | Set to `1` to force OpenAI embeddings instead of local |
+| `OPENAI_API_KEY` | only with `USE_OPENAI_EMBEDDINGS=1` | OpenAI auth |
+| `GITHUB_WEBHOOK_SECRET` | only if you wire a webhook | Shared HMAC secret |
+| `USE_ANTHROPIC_API_KEY` | no | Set to `1` to opt back into API-key auth instead of CLI OAuth |
 
 ## File layout
 
 ```
 src/
 ├─ coordinator/
-│  ├─ index.ts            daemon entry: poll, schedule, recover-on-restart
+│  ├─ index.ts            daemon entry: poll, drain dispatch, recover-on-restart
 │  ├─ implementer.ts      pickup → claim → plan → implement → verify → iterate → PR
 │  ├─ reviewer.ts         codebase walk + dedupe + bounded issue creation
-│  ├─ worktree.ts         create / remove / reap / protected-ref guard
-│  ├─ pr-body.ts          structured PR template (verification table + critic summary)
-│  ├─ repo-summary.ts     truncated tree for the planner prompt
-│  └─ budget.ts           per-run / per-issue / per-day caps
+│  ├─ worktree.ts         create / remove / reap / clearGitLocks / branch cleanup
+│  ├─ pr-body.ts          structured PR template with verification table
+│  └─ dispatch.ts         cross-process signal so /Fix it dispatches within 2s
 ├─ claude/
-│  ├─ runner.ts           execa wrapper, stream-json parser, hang heuristics, cost capture
-│  └─ prompts.ts          plan + implement + iterate + critic + review prompts (versioned)
-├─ verification/
-│  ├─ index.ts            orchestrates the 8 checks; persists verdict per attempt
-│  ├─ detect.ts           autodetect test/typecheck/lint from package.json + Cargo.toml + …
-│  ├─ run.ts              shell wrapper that never throws on non-zero
-│  ├─ typecheck.ts        check 1
-│  ├─ tests.ts            check 2
-│  ├─ diff.ts             checks 3 + 6 (plan-tests-added, diff size)
-│  ├─ mutation.ts         check 4 (stash-and-prove)
-│  ├─ lint.ts             check 5
-│  ├─ banned.ts           check 7
-│  └─ critic.ts           check 8 (Claude Haiku, tool-use schema-bound)
+│  ├─ runner.ts           execa wrapper, stream-json parser, hang heuristics
+│  ├─ headless.ts         one-shot `claude -p` for planner / critic / chat
+│  └─ prompts.ts          plan + implement + iterate + critic + review prompts
+├─ verification/          orchestrator + 8 checks (see §verification harness)
 ├─ github/
-│  ├─ client.ts           octokit wrapper (list/label/comment/create-issue/open-PR)
-│  ├─ webhook.ts          HMAC-SHA256 raw-body verify, constant-time compare
+│  ├─ client.ts           Octokit wrapper; ghFor(owner, repo) routes inst-token
+│  ├─ app.ts              JWT minting, install token cache, manifest creds
+│  ├─ webhook.ts          HMAC-SHA256 raw-body verify
 │  └─ issue-dedupe.ts     embedding-cosine duplicate detection
 ├─ chat/
-│  ├─ corpus.ts           run → markdown summary → embed → store
-│  └─ answer.ts           retrieve top-K → Claude with citations
-├─ embeddings/openai.ts   text-embedding-3-small (normalized, dot=cosine)
-├─ db/
-│  ├─ schema.sql · index.ts · migrate.ts
-└─ shared/
-   ├─ logger.ts · events.ts (typed emitEvent helper)
+│  ├─ corpus.ts           terminal run → markdown → embed → store
+│  ├─ answer.ts           retrieve top-K + live-runs context → CLI → citations
+│  └─ live-runs.ts        snapshot of in-flight runs for chat context
+├─ embeddings/
+│  ├─ index.ts            backend router (local default, OpenAI opt-in)
+│  ├─ local.ts            transformers.js, Xenova/all-MiniLM-L6-v2
+│  └─ openai.ts           text-embedding-3-small (kept for opt-in)
+├─ repo-store.ts          DB-backed connected repos + activeRepos()
+├─ repo-clone.ts          installation-token-aware git clone + idempotent fetch
+├─ db/                    schema.sql, index.ts, migrate.ts
+└─ shared/                logger.ts, events.ts
 
 app/
-├─ page.tsx               live activity feed (SSE)
-├─ runs/page.tsx          filterable runs table
-├─ runs/[id]/page.tsx     detail + verdicts + event stream + diff
-├─ runs/[id]/diff/page.tsx full diff
-├─ chat/page.tsx          ask the bot
-├─ repos/page.tsx         config snapshot
-├─ settings/page.tsx
-└─ api/…                  see Architecture section
+├─ page.tsx               Otis landing — hero, prompt, active session, week stats
+├─ sessions/page.tsx      sessions list (active first)
+├─ sessions/[id]/page.tsx the session workspace (narration + 5 tabs + scrubber)
+├─ sessions/[id]/share/   public read-only + opengraph-image
+├─ inbox/page.tsx         Queue + Conversation tabs
+├─ settings/page.tsx      repos + theme + sounds + env-var matrix
+├─ api/
+│  ├─ github/app/         setup + setup-callback + install callback + info
+│  ├─ issues/             list + /fix (label + dispatch)
+│  ├─ repos/[id]/         get/patch/delete + /clone + /review
+│  ├─ sessions/start/     "Send Otis to work" → opens a GitHub issue
+│  ├─ sessions/[id]/file/ Code-tab file fetch from worktree/clone
+│  └─ runs/[id]/events    SSE event stream
+└─ globals.css            oklch token system (dark default)
 
-bot.config.ts             single source of truth for labels, budgets, intervals, policy
+components/
+├─ Shell.tsx              top-bar layout with RepoSelector + ⌘K chip
+├─ NarrationStream.tsx    Otis's voice rendered with thinking cursor
+├─ SessionWorkspace.tsx   5-tab workspace shell
+├─ workspace/             PlanTab, CodeTab (Monaco), DiffTab, TerminalTab, PrTab
+├─ Scrubber.tsx           time-travel strip
+├─ CommandPalette.tsx     cmdk, ⌘K, sessions + issues + actions
+├─ RepoSelector.tsx       top-bar dropdown that scopes the whole dashboard
+├─ CelebrationListener.tsx one-shot confetti on pr.opened
+└─ icons/                 OtisMark, LiveDot, ScrubberHandle
+
+lib/
+├─ narration.ts           events → Otis-voice translator
+├─ replay.ts              client-side replay engine for the scrubber
+├─ repo-scope.ts          ?repo= URL state hook
+├─ celebrate.ts           confetti + sfx
+└─ hooks.ts               useActiveCount (scope-aware)
+
+bot.config.ts             labels, budgets, intervals, policy
 ```
 
 ## Test surface
 
 ```
 test/
-├─ signature.test.ts      5  GitHub HMAC verify: tampered body / wrong secret / missing prefix
-├─ banned.test.ts         5  banned-pattern scan, including context-line false-positive guard
-├─ diff.test.ts           7  diff-size cap (incl. 2× for complexity:large) + plan-tests-added
-├─ dedupe.test.ts         3  reviewer cosine-threshold dedupe with mocked embeddings
-├─ pr-body.test.ts        6  template snapshots: passing run, needs-review with WARNING block
-└─ worktree-guard.test.ts 2  protected-ref refusal (main/master/trunk/develop)
+├─ stream.test.ts             12  ndjson parser: tool_use shapes, hang heuristics, cost capture
+├─ diff.test.ts                7  diff-size cap + plan-tests-added
+├─ pr-body.test.ts             6  template snapshots: passing run, needs-review with warnings
+├─ signature.test.ts           5  GitHub HMAC verify: tampered body, wrong secret, missing prefix
+├─ banned.test.ts              5  banned-pattern scan, false-positive guard
+├─ dedupe.test.ts              3  reviewer cosine-threshold dedupe (mocked router)
+├─ git-locks.test.ts           3  clearGitLocks idempotency + safe scope
+├─ extract-json.test.ts       10  CLI output: bare JSON, fences, prose-wrapping, nested braces
+├─ worktree-guard.test.ts      2  protected-ref refusal (main/master/trunk/develop)
+└─ verification-harness.test.ts 1  end-to-end harness on a real git repo
 ```
 
-`npm test` runs all 28 in under a second.
+`npm test` runs all 54 in under a second + one e2e in ~10s.
+
+## Why this architecture
+
+**Minimum scaffold, maximum verification.** Borrowed from [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent), which scores >74% on SWE-bench Verified with ~100 lines of Python and bash as its only tool. The lesson: capable models don't need fancy orchestration — they need a *grader they can't bullshit*. Engineering attention goes into the harness, not the agent loop.
+
+**Why Claude Code CLI as the driver?** It already implements the inner planning + tool-use + file-edit loop. We wrap a tool that already nails the inner game and own the outer game: workspace isolation, verification, iteration, PR opening, cost tracking, audit.
+
+**Why git worktrees instead of clones?** ~10× faster spinup per issue (worktrees share `.git`), instant branch creation, working dir always clean. Tradeoff: needs the orphan reaper (every coordinator startup + every 6h) to keep disk usage bounded.
+
+**Why a GitHub App with auto-install instead of PATs?** Per-install scoping, higher rate limits, no rotation, no shared secret to leak. The manifest flow means you click "Create" once and "Install" once — that's the whole setup.
+
+**Why two refusal paths in the implementer?**
+1. *Planner aborts* — Otis examines the issue and decides it's too ambiguous, too large, or asks for something dangerous. Comments the reason, drops the claim label, exits clean. The bot is allowed to say no.
+2. *Iteration exhausted* — implementation never satisfies the harness. PR opens anyway under `bot-needs-review` with a full verification report. *Rather a transparent failure than a confident broken thing.*
 
 ## What's intentionally out of scope (for now)
 
-- **PR auto-merge.** v0 default: never. Bot opens PRs, humans merge them. Per Ayaan's check-in.
-- **Multi-repo concurrency.** One implementer run at a time per repo (atomic claim via label + run-row UNIQUE constraint). Reviewer can run on a different repo in parallel.
-- **MCP servers.** `--bare` skips all auto-discovery for deterministic runs across machines. Worth a v0.5 if the bot ever needs a project-specific tool.
-- **Token-by-token streaming on the chat surface.** SSE is wired for run events; chat responses come back as a single payload. Adding streaming is a 1-hour swap when needed.
+- **PR auto-merge.** v0 default: never. Otis opens PRs, humans merge them.
+- **Multi-repo concurrency.** Up to 3 concurrent implementer runs total. Reviewer can run on a different repo in parallel.
+- **MCP servers.** Each subprocess runs with a tightly-scoped allow-list; no auto-discovery of project-specific tools.
+- **Token-by-token chat streaming.** SSE is wired for run events; chat responses come back as a single payload. ~1-hour swap when needed.
 
 ## Caveats
 
-- **June 15, 2026:** Anthropic moves `claude -p` on subscription plans to a separate Agent SDK credit pool. If the bot uses subscription auth, billing config needs an update past that date. Pay-per-use via `ANTHROPIC_API_KEY` is unaffected. (Per [Anthropic's headless docs](https://code.claude.com/docs/en/headless).)
 - **Local-first, not multi-tenant.** One coordinator daemon per `bot.db`. Multi-repo within a single daemon works; multi-org needs separate deployments.
-- **Webhook reachability:** the dashboard is a Next.js app — easy to expose. The coordinator daemon doesn't need to be public, only the dashboard's `/api/github/webhook`. A `cloudflared tunnel` is enough for the local-dev case.
+- **Webhook reachability:** dev-mode polling is the default. To wire webhooks for sub-minute latency, expose `/api/github/webhook` via `cloudflared tunnel --url http://localhost:3000` and configure the App's webhook URL + secret.
 
 ---
 

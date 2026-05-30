@@ -41,6 +41,9 @@ export type StreamSink = {
   lastToolUseAt: number;
   lastTextDeltaAt: number;
   lastToolName?: string;
+  // Captured from the full assistant turn so we can name the file Claude is
+  // editing in the dashboard narration. Mirrors Anthropic's tool_use.input.
+  lastToolInput?: Record<string, unknown>;
 };
 
 export function emptySink(now = Date.now()): StreamSink {
@@ -117,14 +120,20 @@ export function consumeStreamLine(line: string, sink: StreamSink, now = Date.now
 
   // Turn-boundary events from the non-partial stream — also progress evidence.
   if (type === "assistant" || type === "user") {
-    // Some captures put tool_use blocks directly here.
+    // Turn-boundary assistant messages carry the full tool_use block,
+    // including `input`. This is the most reliable place to capture which
+    // file Claude is touching — partial-message streams send `input` piecewise
+    // as input_json_delta events which would require buffering.
     const msg = (evt as { message?: { content?: unknown } }).message;
     const content = Array.isArray(msg?.content) ? msg.content : [];
     for (const block of content) {
-      const b = block as { type?: unknown; name?: unknown };
+      const b = block as { type?: unknown; name?: unknown; input?: unknown };
       if (b?.type === "tool_use") {
         sink.lastToolUseAt = now;
         if (typeof b.name === "string") sink.lastToolName = b.name;
+        if (b.input && typeof b.input === "object") {
+          sink.lastToolInput = b.input as Record<string, unknown>;
+        }
       }
     }
     return true;

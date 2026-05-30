@@ -192,6 +192,10 @@ export async function runClaudeCode(opts: ClaudeRunOptions): Promise<ClaudeRunRe
         emitEvent(opts.runId, "implement.tool_use", {
           mode: opts.mode,
           tool: sink.lastToolName ?? "unknown",
+          // `input` may be undefined when the tool_use first arrived via a
+          // partial content_block_start (before the assistant turn-boundary).
+          // The narration translator falls back gracefully when it's missing.
+          input: sink.lastToolInput,
         });
       }
     }
