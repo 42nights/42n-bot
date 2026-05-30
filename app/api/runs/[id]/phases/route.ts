@@ -25,11 +25,15 @@ export async function GET(
 ) {
   ensureSchema();
   const { id } = await ctx.params;
+  const n = Number(id);
+  if (!Number.isFinite(n)) {
+    return NextResponse.json({ error: "bad id" }, { status: 400 });
+  }
   const phases = db
     .prepare(
       `SELECT * FROM phase_costs WHERE run_id = ? ORDER BY created_at ASC`,
     )
-    .all(Number(id)) as PhaseCostRow[];
+    .all(n) as PhaseCostRow[];
 
   // Roll up per phase (sum across attempts) for the headline numbers.
   const rollup = new Map<

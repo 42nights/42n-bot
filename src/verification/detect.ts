@@ -14,6 +14,34 @@ export type ToolchainHints = {
   testFilesArgv: ((paths: string[]) => string[]) | null;
 };
 
+type PackageManager = "pnpm" | "yarn" | "bun" | "npm";
+
+/** Detect the package manager by checking lock files in priority order. */
+export function detectPackageManager(repoDir: string): PackageManager {
+  if (fs.existsSync(path.join(repoDir, "pnpm-lock.yaml"))) return "pnpm";
+  if (fs.existsSync(path.join(repoDir, "yarn.lock"))) return "yarn";
+  if (
+    fs.existsSync(path.join(repoDir, "bun.lockb")) ||
+    fs.existsSync(path.join(repoDir, "bun.lock"))
+  )
+    return "bun";
+  return "npm";
+}
+
+/** Returns [runner, execRunner] — e.g. ["pnpm", "pnpm exec"] for pnpm. */
+function pmRunners(pm: PackageManager): { run: string; exec: string } {
+  switch (pm) {
+    case "pnpm":
+      return { run: "pnpm", exec: "pnpm exec" };
+    case "yarn":
+      return { run: "yarn", exec: "yarn exec" };
+    case "bun":
+      return { run: "bun", exec: "bunx" };
+    case "npm":
+      return { run: "npm", exec: "npx" };
+  }
+}
+
 /**
  * Detect what test/lint/typecheck commands the target repo wants us to run.
  * Reads package.json scripts first, then falls back to language-specific
@@ -36,18 +64,21 @@ export function detectToolchain(repoDir: string): ToolchainHints {
         scripts?: Record<string, string>;
       };
       const scripts = pkg.scripts ?? {};
-      if (scripts.typecheck) hints.typecheck = ["npm", "run", "typecheck"];
+      const pm = detectPackageManager(repoDir);
+      const { run, exec } = pmRunners(pm);
+
+      if (scripts.typecheck) hints.typecheck = [run, "run", "typecheck"];
       else if (scripts["type-check"])
-        hints.typecheck = ["npm", "run", "type-check"];
+        hints.typecheck = [run, "run", "type-check"];
       else if (fs.existsSync(path.join(repoDir, "tsconfig.json"))) {
-        hints.typecheck = ["npx", "tsc", "--noEmit"];
+        hints.typecheck = [exec, "tsc", "--noEmit"];
       }
       if (scripts.test) {
-        hints.test = ["npm", "test", "--", "--run"];
+        hints.test = [run, "test", "--", "--run"];
         // Both vitest + jest accept positional file paths after `--`.
-        hints.testFilesArgv = (paths) => ["npm", "test", "--", "--run", ...paths];
+        hints.testFilesArgv = (paths) => [run, "test", "--", "--run", ...paths];
       }
-      if (scripts.lint) hints.lint = ["npm", "run", "lint"];
+      if (scripts.lint) hints.lint = [run, "run", "lint"];
       hints.language = fs.existsSync(path.join(repoDir, "tsconfig.json")) ? "ts" : "js";
     } catch {
       /* malformed package.json — fall through */

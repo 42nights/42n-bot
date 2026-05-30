@@ -187,7 +187,23 @@ export async function freshPushAuth(
   if (appConfigured()) {
     const installId = installationIdForRepo(owner, name);
     if (installId) {
-      token = await tokenForInstallation(installId);
+      try {
+        token = await tokenForInstallation(installId);
+      } catch (err1) {
+        log.warn("push-auth", `installation token mint failed, retrying: ${err1}`);
+        await new Promise((r) => setTimeout(r, 1000));
+        try {
+          token = await tokenForInstallation(installId);
+        } catch (err2) {
+          // Both attempts failed. Fall back to PAT — push can still succeed
+          // on some setups (PAT with repo scope). Caller scrubs/handles a
+          // final push failure; do not hard-throw here.
+          log.warn(
+            "push-auth",
+            `installation token mint failed twice, falling back to PAT: ${err2 instanceof Error ? err2.message : String(err2)}`,
+          );
+        }
+      }
     }
   }
   if (!token) token = process.env.GITHUB_TOKEN ?? null;

@@ -84,7 +84,9 @@ const ClaudeJsonResultSchema = z
  * regex when the JSON didn't parse. Best-effort — returns 0 if not found.
  */
 function scrapeCostFromStdout(stdout: string): number {
-  const m = stdout.match(/"total_cost_usd"\s*:\s*([0-9]+(?:\.[0-9]+)?)/);
+  const m = stdout.match(
+    /"total_cost_usd"\s*:\s*(-?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)/,
+  );
   if (!m) return 0;
   const v = Number(m[1]);
   return Number.isFinite(v) ? v : 0;
@@ -409,7 +411,15 @@ export async function runStructuredPlan<T>(opts: {
   // occasionally glitches and returns text where structured_output should
   // have been. One cheap retry usually recovers.
   const first = await attempt();
-  if (first.ok) return first;
+  if (first.ok) {
+    if (opts.costBudgetUsd != null && first.costUsd > opts.costBudgetUsd) {
+      log.warn(
+        "claude",
+        `planner budget overrun: cost=$${first.costUsd.toFixed(4)} budget=$${opts.costBudgetUsd.toFixed(4)}`,
+      );
+    }
+    return first;
+  }
   if (!first.violation)
     return {
       ok: false,
@@ -423,9 +433,16 @@ export async function runStructuredPlan<T>(opts: {
   );
   const second = await attempt();
   if (second.ok) {
+    const totalCost = second.costUsd + (first.partialCostUsd ?? 0);
+    if (opts.costBudgetUsd != null && totalCost > opts.costBudgetUsd) {
+      log.warn(
+        "claude",
+        `planner budget overrun: cost=$${totalCost.toFixed(4)} budget=$${opts.costBudgetUsd.toFixed(4)}`,
+      );
+    }
     return {
       ...second,
-      costUsd: second.costUsd + (first.partialCostUsd ?? 0),
+      costUsd: totalCost,
     };
   }
   return {

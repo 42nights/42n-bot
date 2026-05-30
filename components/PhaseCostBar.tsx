@@ -38,13 +38,21 @@ function phaseColor(phase: string): string {
 }
 
 export function PhaseCostBar({ runId }: { runId: number }) {
-  const { data } = useSWR<PhasesResponse>(
+  const { data, error } = useSWR<PhasesResponse>(
     `/api/runs/${runId}/phases`,
     fetcher,
     { refreshInterval: 4000 },
   );
   const [expanded, setExpanded] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
+
+  if (error) {
+    return (
+      <div className="border-b border-[var(--border)] bg-[var(--bg-sunken)] px-6 py-1.5">
+        <span className="text-xs text-[var(--fg-muted)]">Phase costs unavailable.</span>
+      </div>
+    );
+  }
 
   const rollup = data?.rollup ?? [];
   if (rollup.length === 0) return null;

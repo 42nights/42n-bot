@@ -138,17 +138,32 @@ export function ghApp(): InstanceType<typeof OctokitWithRetry> {
  * Octokit authed as a specific installation. Installation tokens last 1 hour;
  * Octokit's auth-app strategy handles minting + refresh internally, so we
  * cache the Octokit instance keyed by installationId.
+ *
+ * TTL is 30 min: well under the 1-hour token lifetime, so a cached client
+ * whose underlying creds were rotated mid-process self-heals without any
+ * caller change. `invalidateInstallation` lets a caller evict immediately
+ * after a 401/403 without waiting for the TTL.
  */
-const installationCache = new Map<
-  number,
-  InstanceType<typeof OctokitWithRetry>
->();
+const INSTALLATION_CACHE_TTL_MS = 30 * 60 * 1000; // 30 min
+
+type CachedInstallation = {
+  client: InstanceType<typeof OctokitWithRetry>;
+  mintedAt: number;
+};
+
+const installationCache = new Map<number, CachedInstallation>();
+
+export function invalidateInstallation(installationId: number): void {
+  installationCache.delete(installationId);
+}
 
 export function ghInstallation(
   installationId: number,
 ): InstanceType<typeof OctokitWithRetry> {
   const cached = installationCache.get(installationId);
-  if (cached) return cached;
+  if (cached && Date.now() - cached.mintedAt < INSTALLATION_CACHE_TTL_MS) {
+    return cached.client;
+  }
   const creds = readAppCreds();
   if (!creds) throw new Error("GitHub App is not configured");
   const client = new OctokitWithRetry({
@@ -161,7 +176,7 @@ export function ghInstallation(
     userAgent: "42n-bot/0.1",
     retry: { doNotRetry: [401, 403, 404, 422] },
   });
-  installationCache.set(installationId, client);
+  installationCache.set(installationId, { client, mintedAt: Date.now() });
   return client;
 }
 

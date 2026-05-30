@@ -172,13 +172,16 @@ async function teardownProcessGroup(pid: number | undefined): Promise<void> {
 
   killGroup("SIGTERM");
 
+  // Probe the process GROUP (-pid) so we wait for all descendants (e.g. the
+  // node child spawned by `next dev` or `npm run dev`), not just the shell
+  // wrapper. ESRCH means the group is gone — that's the success case.
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
     try {
-      process.kill(pid, 0); // probe — throws if the process is gone
+      process.kill(-pid, 0); // throws ESRCH when the whole group is gone
       await new Promise((r) => setTimeout(r, 200));
     } catch {
-      return; // process exited cleanly
+      return; // entire process group exited cleanly
     }
   }
 

@@ -75,11 +75,33 @@ export default function SessionPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
-  const { data } = useSWR<{
+  const { data, error } = useSWR<{
     run: Run;
     events: EventRow[];
     verdicts: Verdict[];
   }>(`/api/runs/${id}`, fetcher, { refreshInterval: 3000 });
+
+  if (error) {
+    return (
+      <div className="flex flex-col h-[calc(100vh-6.25rem)]">
+        <div className="h-12 px-6 flex items-center gap-4 border-b border-border">
+          <Link
+            href="/sessions"
+            className="inline-flex items-center gap-1.5 text-xs text-[var(--fg-muted)] hover:text-[var(--fg)] transition-colors"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" /> Sessions
+          </Link>
+        </div>
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-sm text-[var(--fg-muted)]">
+            {error.status === 404
+              ? "Session not found."
+              : "Failed to load session. Try refreshing."}
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (!data) {
     return (

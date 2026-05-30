@@ -100,6 +100,13 @@ export const botConfig = {
     defaultTimeoutMs: 600_000,
     plannerTimeoutMs: 180_000,
     criticTimeoutMs: 120_000,
+    // REPRODUCE is not a pure-reasoning planner call — it writes a test, RUNS
+    // it, and iterates to confirm a real failure before emitting JSON. That
+    // agentic test-loop is variable and intermittently blew past the 180s
+    // planner cap (e.g. run #94), so it got the wrong, too-tight budget. Give
+    // it test-running class time. Still non-fatal if it times out (falls
+    // through to PLAN), so a generous cap is safe.
+    reproduceTimeoutMs: 420_000,
   },
 
   verification: {

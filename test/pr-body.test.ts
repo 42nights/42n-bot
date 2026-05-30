@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { renderPrBody } from "../src/coordinator/pr-body";
+import type { Understanding, CriticV2Report } from "../src/claude/phases/types";
 
 const plan = {
   files_to_change: [{ path: "src/x.ts", kind: "modify" as const, why: "" }],
@@ -82,5 +83,79 @@ describe("renderPrBody", () => {
     });
     expect(b).toContain("[!WARNING]");
     expect(b).toContain("3 iteration(s)");
+  });
+});
+
+// Regression for PR #23: the critic adjudicated every criterion clearly_yes,
+// but the table joined verdicts to criteria by EXACT text — and the critic
+// paraphrases — so every row printed "Not adjudicated". The join must survive
+// paraphrasing (index fallback).
+describe("renderAcceptanceTable join survives critic paraphrasing", () => {
+  const understanding: Understanding = {
+    issue_type: "bug",
+    issue_summary: "tag filter is case sensitive",
+    acceptance_criteria: [
+      "`pulse list --tag Work` returns tasks that were added with tag `work` (case-insensitive match)",
+      "`pulse list --tag DoesNotExist` returns no tasks (negative case)",
+    ],
+    user_visible_outcome: "case-insensitive tag filter",
+    relevant_files: [
+      { path: "src/commands/list.ts", relevance: "likely_changes", why: "the filter" },
+    ],
+    unknowns: [],
+    runtime_surface: {
+      starts_dev_server: false,
+      adds_or_modifies_endpoints: [],
+      adds_migration: false,
+      modifies_database_schema: false,
+      external_dependencies: [],
+    },
+    confidence_to_proceed: 98,
+    proceed: true,
+    abort_reason: null,
+  };
+
+  const criticV2: CriticV2Report = {
+    // NOTE: criterion text is deliberately PARAPHRASED vs understanding above.
+    implements_acceptance_criteria: [
+      {
+        criterion: "list --tag Work returns tasks added with work (case-insensitive)",
+        verdict: "clearly_yes",
+        evidence: "normalizeTag applied to the query before includes()",
+      },
+      {
+        criterion: "non-existent tag returns nothing",
+        verdict: "clearly_yes",
+        evidence: "negative test asserts empty output",
+      },
+    ],
+    test_quality: {
+      acceptance_tests_match_criteria: true,
+      test_code_is_meaningful: true,
+      false_positive_likely: false,
+    },
+    hidden_bugs: [],
+    merge_confidence: 95,
+    one_line_summary: "Minimal correct fix.",
+  };
+
+  const body = renderPrBody({
+    issue: { number: 20, title: "tag filter case-sensitive", body: "x" },
+    plan,
+    verdict,
+    attempts: 1,
+    runId: 97,
+    costUsd: 1.29,
+    needsReview: false,
+    understanding,
+    criticV2,
+  });
+
+  it("shows the verdict glyph for every criterion despite paraphrasing", () => {
+    const glyphs = body.match(/✅ Clearly yes/g) ?? [];
+    expect(glyphs.length).toBe(2);
+  });
+  it("does NOT print 'Not adjudicated' when the critic covered every criterion", () => {
+    expect(body).not.toContain("Not adjudicated");
   });
 });

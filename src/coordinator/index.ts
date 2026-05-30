@@ -61,8 +61,12 @@ async function pollOnce() {
         );
         return;
       }
-      const claimed = issue.labels.includes(botConfig.labels.claimed);
-      if (claimed) continue;
+      // NOTE: we intentionally do NOT skip on the `bot-claimed` label. The
+      // authoritative claim is now the active-run row below + the atomic
+      // createRunRow insert in the implementer. Skipping on the label alone
+      // meant a single failed `removeLabel` (GitHub 503/timeout on crash
+      // recovery) left the label stuck forever and the issue permanently
+      // un-pickable. Relying on the DB makes a stale claim self-healing.
       const repoFull = `${repoCfg.owner}/${repoCfg.name}`;
       const key = inFlightKey(repoFull, issue.number);
       if (inFlight.has(key)) continue;
@@ -240,6 +244,27 @@ async function main() {
         .run(cutoff);
       if (wh.changes)
         log.info("coord", `pruned ${wh.changes} old webhook_deliveries row(s)`);
+
+      // Prune terminal runs older than the retention window. The schema's
+      // ON DELETE CASCADE takes events, artifacts (can be multi-MB: diffs,
+      // full critic reports) and verdicts with them, so a high-velocity repo
+      // can't grow the DB without bound.
+      const oldRuns = db
+        .prepare(
+          `DELETE FROM runs WHERE finished_at IS NOT NULL AND finished_at < ?`,
+        )
+        .run(cutoff);
+      if (oldRuns.changes)
+        log.info("coord", `pruned ${oldRuns.changes} old run(s) + cascaded rows`);
+
+      // Prune stale dedup embeddings. lookupCache recomputes a missing/changed
+      // embedding on demand (cheap, local model), so dropping cold entries is
+      // safe and bounds the table.
+      const emb = db
+        .prepare(`DELETE FROM issue_embeddings WHERE cached_at < ?`)
+        .run(cutoff);
+      if (emb.changes)
+        log.info("coord", `pruned ${emb.changes} stale issue_embedding(s)`);
     } catch (err) {
       log.warn("coord", `prune error: ${err}`);
     }

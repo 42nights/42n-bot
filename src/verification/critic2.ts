@@ -51,9 +51,15 @@ export async function checkCriticV2(args: {
         ? v === "clearly_yes" || v === "probably_yes"
         : v === "clearly_yes";
 
-    const allCriteriaOk = report.implements_acceptance_criteria.every((c) =>
-      verdictOk(c.verdict),
-    );
+    // `.every()` on an empty array is vacuously true — a critic that returned
+    // zero (or fewer) per-criterion verdicts would otherwise PASS this gate
+    // while adjudicating nothing. Require a verdict for every declared
+    // criterion before allCriteriaOk can be true.
+    const declaredCriteria = args.understanding.acceptance_criteria.length;
+    const adjudicated = report.implements_acceptance_criteria;
+    const allCriteriaOk =
+      adjudicated.length >= declaredCriteria &&
+      adjudicated.every((c) => verdictOk(c.verdict));
     const hasHighBug = report.hidden_bugs.some((b) => b.severity === "high");
     const pass =
       report.merge_confidence >= botConfig.verification.criticMinConfidence &&

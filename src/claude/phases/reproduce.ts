@@ -28,6 +28,7 @@ export async function runReproduce(opts: {
       schema: ReproduceSchema,
       jsonSchema: REPRO_JSON_SCHEMA,
       cwd: opts.cwd,
+      timeoutMs: botConfig.claudeCode.reproduceTimeoutMs,
       costBudgetUsd: opts.costBudgetUsd ?? botConfig.budgets.perRunUsd,
       allowedTools: botConfig.allowedTools,
       permissionMode: "acceptEdits",

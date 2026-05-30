@@ -270,7 +270,7 @@ export function DiffTab({
   verdicts: Verdict[];
   events: Array<{ kind: string; payload_json: string }>;
 }) {
-  const { data, isLoading } = useSWR<{ diff: string }>(
+  const { data, isLoading, error } = useSWR<{ diff: string }>(
     `/api/runs/${runId}/diff`,
     fetcher,
     { refreshInterval: 5000 },
@@ -296,6 +296,16 @@ export function DiffTab({
 
   // Clamp selected index when files list changes
   const safeIdx = Math.min(selectedIdx, Math.max(0, files.length - 1));
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-full min-h-[200px]">
+        <p className="text-sm text-[var(--fg-muted)] italic">
+          {error.message ?? "Failed to load diff."}
+        </p>
+      </div>
+    );
+  }
 
   if (isLoading && !data) {
     return (

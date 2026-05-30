@@ -36,6 +36,7 @@ import { emitEvent } from "../shared/events";
 import { log } from "../shared/logger";
 import { dayBudgetOk, issueBudgetOk } from "./budget";
 import { freshPushAuth } from "../repo-clone";
+import { ACTIVE_STATUSES } from "../shared/statuses";
 
 const PlanSchema = z.object({
   files_to_change: z.array(
@@ -105,19 +106,35 @@ const IMPLEMENTER_ALLOWED_TOOLS = [
   "Read", "Edit", "Write", "Glob", "Grep",
 ];
 
-function createRunRow(input: ImplementerInput): number {
+// Returns the new run id, or null if another active run already owns this
+// issue (lost the claim race).
+function createRunRow(input: ImplementerInput): number | null {
+  const repoFull = `${input.owner}/${input.repo}`;
+  const ph = ACTIVE_STATUSES.map(() => "?").join(",");
+  // Atomic claim: insert ONLY if no active run already exists for this issue.
+  // better-sqlite3 is synchronous, so the existence check + insert execute
+  // without yielding (atomic in-process), and SQLite's write lock serializes
+  // it across processes — closing the poll-tick TOCTOU window the in-memory
+  // inFlight set can't cover if the coordinator is ever run multi-process.
   const info = db
     .prepare(
       `INSERT INTO runs (type, repo, issue_number, issue_title, issue_body, status, started_at)
-       VALUES ('implement', ?, ?, ?, ?, 'queued', ?)`,
+       SELECT 'implement', ?, ?, ?, ?, 'queued', ?
+       WHERE NOT EXISTS (
+         SELECT 1 FROM runs WHERE repo=? AND issue_number=? AND status IN (${ph})
+       )`,
     )
     .run(
-      `${input.owner}/${input.repo}`,
+      repoFull,
       input.issue.number,
       input.issue.title,
       input.issue.body,
       Date.now(),
+      repoFull,
+      input.issue.number,
+      ...ACTIVE_STATUSES,
     );
+  if (info.changes === 0) return null;
   return Number(info.lastInsertRowid);
 }
 
@@ -253,6 +270,13 @@ export async function runImplementer(input: ImplementerInput): Promise<{
   }
 
   const runId = createRunRow(input);
+  if (runId === null) {
+    log.info(
+      "implementer",
+      `${input.owner}/${input.repo}#${input.issue.number} already has an active run — skipping duplicate pickup`,
+    );
+    return { runId: -1, outcome: "abandoned" };
+  }
   emitEvent(runId, "run.created", { type: "implement", issue: input.issue.number });
 
   // A1: apply the bot-claimed label IMMEDIATELY as the cross-process lock.
@@ -272,6 +296,10 @@ export async function runImplementer(input: ImplementerInput): Promise<{
 
   let worktreePath: string | null = null;
   let branch: string | null = null;
+  // Hoisted so the outer catch can scrub it from any error it logs/stores —
+  // the push URL embeds this token and a failure anywhere after minting could
+  // otherwise carry it into error_message.
+  let pushToken: string | null = null;
 
   try {
     // 1. Worktree — wrapped in try so creation failures route through the
@@ -779,10 +807,11 @@ export async function runImplementer(input: ImplementerInput): Promise<{
     // Push with a freshly-minted token (the clone-time token has expired) to an
     // explicit URL — avoids mutating shared worktree git config under
     // concurrency. Scrub the token from any failure before it surfaces.
-    const { url: pushUrl, token: pushToken } = await freshPushAuth(
+    const { url: pushUrl, token } = await freshPushAuth(
       input.owner,
       input.repo,
     );
+    pushToken = token;
     try {
       await git.push(pushUrl, `${branch!}:${branch!}`);
     } catch (err) {
@@ -859,13 +888,31 @@ export async function runImplementer(input: ImplementerInput): Promise<{
     });
 
     if (needsReview) {
+      const whyBlock = lastVerdict?.failureSummary
+        ? `\n\n**What didn't pass cleanly:**\n${lastVerdict.failureSummary
+            .split("\n")
+            .slice(0, 6)
+            .join("\n")}`
+        : "";
       await commentOnIssue({
         owner: input.owner,
         repo: input.repo,
         issue_number: input.issue.number,
-        body: `🤖 I attempted this issue but couldn't fully satisfy the verification harness after ${attempt} attempts. Opened PR #${pr.number} for human review — see the verification report in the PR body.`,
+        body: `🤖 I attempted this issue but couldn't fully satisfy the verification harness after ${attempt} attempts. Opened PR #${pr.number} for human review — full verification report is in the PR body.${whyBlock}`,
       }).catch(() => {});
     }
+
+    // The branch is pushed to the remote and the PR is open, so the local
+    // worktree has served its purpose. Every FAILURE path removes it; the
+    // success path used to return without cleanup, leaking a worktree dir
+    // (and its node_modules symlink) on every successful run.
+    await removeWorktree({
+      repoDir: input.repoDir,
+      worktreePath,
+      force: true,
+    }).catch((err) =>
+      log.warn("implementer", `worktree cleanup after PR failed: ${err}`),
+    );
 
     return {
       runId,

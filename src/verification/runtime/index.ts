@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import type { CheckResult } from "../types";
 import type { Understanding } from "../../claude/phases/types";
@@ -8,8 +9,26 @@ import { checkMigration, type MigrationResult } from "./migration";
 
 type DevServerInfo = { command: string; port: number };
 
-function detectDevServer(cwd: string): DevServerInfo {
-  const port = Number(process.env.PORT) || 3000;
+/** Ask the OS for a free port by binding to :0 and reading back the assigned port. */
+async function getFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.listen(0, "127.0.0.1", () => {
+      const addr = srv.address();
+      srv.close(() => {
+        if (addr && typeof addr === "object") {
+          resolve(addr.port);
+        } else {
+          reject(new Error("Could not determine free port"));
+        }
+      });
+    });
+    srv.on("error", reject);
+  });
+}
+
+async function detectDevServer(cwd: string): Promise<DevServerInfo> {
+  const port = await getFreePort();
   const pkgPath = path.join(cwd, "package.json");
   if (fs.existsSync(pkgPath)) {
     try {
@@ -39,17 +58,29 @@ type RuntimeDetail = {
   migration: MigrationResult | null;
 };
 
+/** Path fragments that indicate server/route/endpoint files. */
+const SERVER_FILE_RE =
+  /(?:^|\/)(?:server|route|router|endpoint|api|handler|middleware|app)\.[^/]+$|\/api\//i;
+
 export async function checkRuntime(args: {
   cwd: string;
   runtimeSurface: Understanding["runtime_surface"];
+  diffPaths?: string[];
 }): Promise<CheckResult> {
-  const { cwd, runtimeSurface } = args;
+  const { cwd, runtimeSurface, diffPaths = [] } = args;
 
   const hasEndpoints = runtimeSurface.adds_or_modifies_endpoints.length > 0;
   const hasMigration = runtimeSurface.adds_migration;
   const needsServer = runtimeSurface.starts_dev_server || hasEndpoints;
 
   if (!needsServer && !hasMigration) {
+    // Warn if the diff touches server/route files but runtime_surface declares nothing.
+    const touchesServerFiles = diffPaths.some((p) => SERVER_FILE_RE.test(p));
+    if (touchesServerFiles) {
+      console.warn(
+        "[runtime] diff touches server/route files but runtime_surface declares no endpoints or dev server — skipping runtime check",
+      );
+    }
     return {
       name: "runtime_verification",
       pass: true,
@@ -89,7 +120,7 @@ export async function checkRuntime(args: {
     };
   }
 
-  const { command, port } = detectDevServer(cwd);
+  const { command, port } = await detectDevServer(cwd);
   const serverResult = await startDevServer({ cwd, command, port });
 
   if (!serverResult.ok) {
@@ -125,7 +156,7 @@ export async function checkRuntime(args: {
   const messages: string[] = [];
   if (endpointsFailed.length > 0) {
     messages.push(
-      `${endpointsFailed.length} endpoint(s) 5xx: ${endpointsFailed.map((e) => `${e.method} ${e.path} → ${e.status}`).join(", ")}`,
+      `${endpointsFailed.length} endpoint(s) failed: ${endpointsFailed.map((e) => `${e.method} ${e.path} → ${e.status}`).join(", ")}`,
     );
   }
   if (migrationFailed) {

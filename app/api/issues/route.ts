@@ -100,22 +100,48 @@ export async function GET(req: NextRequest) {
 
       // Annotate with the most recent run per (repo, issue) so the UI can
       // show "Fix in progress" / "PR opened #42" / etc.
+      // Single batch query instead of N per-issue queries.
       const rows = Array.from(byNum.values());
-      for (const r of rows) {
-        const run = db
+      if (rows.length > 0) {
+        const placeholders = rows.map(() => "?").join(",");
+        const issueNumbers = rows.map((r) => r.number);
+        const runRows = db
           .prepare(
-            `SELECT id, status, pr_number, pr_url FROM runs
-               WHERE repo=? AND issue_number=?
-               ORDER BY started_at DESC LIMIT 1`,
+            `SELECT id, status, pr_number, pr_url, issue_number, started_at FROM runs
+               WHERE repo=? AND issue_number IN (${placeholders})
+               ORDER BY started_at DESC`,
           )
-          .get(repoFull, r.number) as
-          | { id: number; status: string; pr_number: number | null; pr_url: string | null }
-          | undefined;
-        if (run) {
-          r.run_id = run.id;
-          r.run_status = run.status;
-          r.pr_number = run.pr_number;
-          r.pr_url = run.pr_url;
+          .all(repoFull, ...issueNumbers) as Array<{
+            id: number;
+            status: string;
+            pr_number: number | null;
+            pr_url: string | null;
+            issue_number: number;
+            started_at: number;
+          }>;
+        // Keep only the latest run per issue_number (first seen = highest started_at due to DESC sort).
+        const latestRunByIssue = new Map<
+          number,
+          { id: number; status: string; pr_number: number | null; pr_url: string | null }
+        >();
+        for (const run of runRows) {
+          if (!latestRunByIssue.has(run.issue_number)) {
+            latestRunByIssue.set(run.issue_number, {
+              id: run.id,
+              status: run.status,
+              pr_number: run.pr_number,
+              pr_url: run.pr_url,
+            });
+          }
+        }
+        for (const r of rows) {
+          const run = latestRunByIssue.get(r.number);
+          if (run) {
+            r.run_id = run.id;
+            r.run_status = run.status;
+            r.pr_number = run.pr_number;
+            r.pr_url = run.pr_url;
+          }
         }
       }
 

@@ -25,6 +25,7 @@ export async function runDesign(opts: {
       schema: DesignSchema,
       jsonSchema: DESIGN_JSON_SCHEMA,
       cwd: opts.cwd,
+      timeoutMs: botConfig.claudeCode.plannerTimeoutMs,
       costBudgetUsd: opts.costBudgetUsd ?? botConfig.budgets.perRunUsd,
       allowedTools: ["Read", "Grep", "Glob"],
       permissionMode: "dontAsk",

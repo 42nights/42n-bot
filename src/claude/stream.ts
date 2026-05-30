@@ -160,9 +160,13 @@ export function evaluateHang(
   if (now - sink.lastAnyEventAt > 60_000 && now - startedAt > 60_000) {
     return { ok: false, kind: "hang_no_event" };
   }
-  // Text deltas keep streaming but no tool_use for 90s.
+  // Text arrived and then STOPPED for 30s, AND no tool_use for 90s overall.
+  // Requiring both conditions prevents killing a legitimately long reasoning
+  // pass where text deltas are still actively streaming — active streaming
+  // (recent lastTextDeltaAt) means the model is thinking, not hung.
   if (
     sink.lastTextDeltaAt > sink.lastToolUseAt &&
+    now - sink.lastTextDeltaAt > 30_000 &&
     now - sink.lastToolUseAt > 90_000
   ) {
     return { ok: false, kind: "hang_no_tool_use" };

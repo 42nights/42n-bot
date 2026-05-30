@@ -123,10 +123,29 @@ export async function runVerification(
       };
     }
   } else {
-    checks.acceptance_tests = skipped(
-      "acceptance_tests",
-      "No acceptance paths declared — pre-v2 run.",
-    );
+    // A v2 run whose understanding DECLARED acceptance criteria but produced no
+    // acceptance_test_paths has nothing to verify those criteria with — letting
+    // it skip with pass=true is a vacuous pass of the entire point of v2. Hard-
+    // gate so it routes to needs-review (and nudges the implementer to add an
+    // acceptance test). Pre-v2 runs (no understanding / no criteria) skip as
+    // before.
+    const declaredCriteria =
+      args.understanding?.acceptance_criteria.length ?? 0;
+    checks.acceptance_tests =
+      declaredCriteria > 0
+        ? {
+            name: "acceptance_tests",
+            pass: false,
+            hardGate: true,
+            message:
+              "Acceptance criteria were declared but no acceptance test files were " +
+              "produced (acceptance_test_paths empty) — the criteria cannot be " +
+              "verified. Add an executable acceptance test.",
+          }
+        : skipped(
+            "acceptance_tests",
+            "No acceptance paths declared — pre-v2 run.",
+          );
   }
 
   // v2 §8.2 — runtime verification. Only runs when understanding declared a

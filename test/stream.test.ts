@@ -144,14 +144,26 @@ describe("evaluateHang", () => {
     if (!r.ok) expect(r.kind).toBe("hang_no_event");
   });
 
-  it("flags hang_no_tool_use when text streams but no tools", () => {
-    // Recent text deltas → lastAnyEventAt stays fresh → no_event check
-    // doesn't fire. But the gap since last tool_use is large → no_tool_use
-    // wins.
+  it("does NOT flag a hang while text is actively streaming (no tool use yet)", () => {
+    // Regression: a long REPRODUCE/analysis pass can stream reasoning text for
+    // minutes before its first tool call. Active streaming (recent text delta)
+    // must never be killed just because no tool ran yet.
     const now = 1_000 + 200_000;
     const sink = emptySink(1_000);
     sink.lastAnyEventAt = now;
-    sink.lastTextDeltaAt = now;
+    sink.lastTextDeltaAt = now; // streaming right now
+    sink.lastToolUseAt = 1_000; // no tool use in a long time
+    const r = evaluateHang(sink, 1_000, now);
+    expect(r.ok).toBe(true);
+  });
+
+  it("flags hang_no_tool_use when text has STALLED and no tools ran", () => {
+    // Text arrived, then went silent for 40s (> 30s), and no tool_use for
+    // 200s (> 90s) — a genuine hang, not active thinking.
+    const now = 1_000 + 200_000;
+    const sink = emptySink(1_000);
+    sink.lastAnyEventAt = now; // a non-text event keeps no_event from firing
+    sink.lastTextDeltaAt = now - 40_000; // text stopped 40s ago
     sink.lastToolUseAt = 1_000;
     const r = evaluateHang(sink, 1_000, now);
     expect(r.ok).toBe(false);

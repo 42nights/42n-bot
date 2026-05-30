@@ -166,12 +166,34 @@ export async function addLabel(args: {
   issue_number: number;
   label: string;
 }) {
-  await ghFor(args.owner, args.repo).issues.addLabels({
+  const client = ghFor(args.owner, args.repo);
+  const payload = {
     owner: args.owner,
     repo: args.repo,
     issue_number: args.issue_number,
     labels: [args.label],
-  });
+  };
+  try {
+    await client.issues.addLabels(payload);
+  } catch (err) {
+    // GitHub returns 422 when the label doesn't exist in the repo yet — common
+    // on a freshly-connected repo that's never seen the bot's labels. This
+    // label is the bot's claim signal; silently skipping it would let two
+    // pollers both treat an issue as unclaimed. Create the label, then retry.
+    const status = (err as { status?: number })?.status;
+    if (status !== 422) throw err;
+    await client.issues
+      .createLabel({
+        owner: args.owner,
+        repo: args.repo,
+        name: args.label,
+        color: "5319e7",
+      })
+      .catch(() => {
+        /* already exists (race) — fine, the retry below will apply it */
+      });
+    await client.issues.addLabels(payload);
+  }
 }
 
 export async function removeLabel(args: {
@@ -187,8 +209,13 @@ export async function removeLabel(args: {
       issue_number: args.issue_number,
       name: args.label,
     });
-  } catch {
-    /* label may already be absent — fine */
+  } catch (err) {
+    // 404 = the label is already absent, which is the expected idempotent
+    // case. Any other status (503, timeout) is a transient failure — don't
+    // mask it as success; let the caller decide (cleanupLabels uses
+    // allSettled, recoverCrashedRuns uses .catch, so neither breaks).
+    const status = (err as { status?: number })?.status;
+    if (status !== 404) throw err;
   }
 }
 
@@ -216,24 +243,55 @@ export async function openPullRequest(args: {
   labels?: string[];
 }): Promise<{ number: number; url: string }> {
   const client = ghFor(args.owner, args.repo);
-  const created = await client.pulls.create({
-    owner: args.owner,
-    repo: args.repo,
-    head: args.head,
-    base: args.base,
-    title: args.title,
-    body: args.body,
-    draft: false,
-  });
-  if (args.labels?.length) {
-    await client.issues.addLabels({
+  let number: number;
+  let url: string;
+  try {
+    const created = await client.pulls.create({
       owner: args.owner,
       repo: args.repo,
-      issue_number: created.data.number,
-      labels: args.labels,
+      head: args.head,
+      base: args.base,
+      title: args.title,
+      body: args.body,
+      draft: false,
     });
+    number = created.data.number;
+    url = created.data.html_url;
+  } catch (err) {
+    // GitHub 422s "A pull request already exists for <head>" when a prior run
+    // pushed the branch + opened a PR, or two attempts raced. Return the
+    // existing open PR instead of failing the run — idempotent.
+    const status = (err as { status?: number })?.status;
+    const msg = err instanceof Error ? err.message : String(err);
+    if (status === 422 && /already exists/i.test(msg)) {
+      const existing = await client.pulls.list({
+        owner: args.owner,
+        repo: args.repo,
+        head: `${args.owner}:${args.head}`,
+        base: args.base,
+        state: "open",
+      });
+      const pr = existing.data[0];
+      if (!pr) throw err;
+      number = pr.number;
+      url = pr.html_url;
+    } else {
+      throw err;
+    }
   }
-  return { number: created.data.number, url: created.data.html_url };
+  if (args.labels?.length) {
+    await client.issues
+      .addLabels({
+        owner: args.owner,
+        repo: args.repo,
+        issue_number: number,
+        labels: args.labels,
+      })
+      .catch(() => {
+        /* best-effort — the PR exists; a label failure shouldn't fail the run */
+      });
+  }
+  return { number, url };
 }
 
 export async function createBotIssue(args: {

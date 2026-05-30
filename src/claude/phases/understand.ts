@@ -124,6 +124,7 @@ export async function runUnderstand(opts: {
       schema: UnderstandingSchema,
       jsonSchema: UNDERSTAND_JSON_SCHEMA,
       cwd: opts.cwd,
+      timeoutMs: botConfig.claudeCode.plannerTimeoutMs,
       costBudgetUsd: opts.costBudgetUsd ?? botConfig.budgets.perRunUsd,
       allowedTools: ["Read", "Grep", "Glob"],
       permissionMode: "dontAsk",

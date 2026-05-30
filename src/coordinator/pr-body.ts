@@ -85,13 +85,13 @@ export function renderPrBody(args: {
   const v2 = args.criticV2;
 
   const criticLine = v2
-    ? `**Critic v2:** ${v2.merge_confidence}/100 — ${v2.one_line_summary}`
+    ? `**Critic v2:** ${v2.merge_confidence}/100 — ${escapeInline(v2.one_line_summary)}`
     : v1Critic
-      ? `**Critic:** ${v1Critic.merge_confidence ?? "—"}/100 — ${v1Critic.one_line_summary ?? "—"}`
+      ? `**Critic:** ${v1Critic.merge_confidence ?? "—"}/100 — ${escapeInline(v1Critic.one_line_summary ?? "—")}`
       : "_Critic did not produce a report._";
 
   const edgeCases = v2
-    ? v2.hidden_bugs.map((b) => `${b.severity.toUpperCase()}: ${b.description}`)
+    ? v2.hidden_bugs.map((b) => `${b.severity.toUpperCase()}: ${escapeInline(b.description)}`)
     : (v1Critic?.missed_edge_cases ?? []);
   const edgeBlock = edgeCases.length
     ? edgeCases.map((e) => `- ${e}`).join("\n")
@@ -117,7 +117,7 @@ ${acceptanceTable}
 
 ## Why
 
-${args.issue.title}
+${escapeInline(args.issue.title)}
 
 > ${issueExcerpt}
 
@@ -175,17 +175,20 @@ function renderAcceptanceTable(
   const criteria = understanding.acceptance_criteria;
   if (criteria.length === 0) return "";
 
-  // Build a lookup from criterion text → critic verdict + evidence.
-  const verdictByCriterion = new Map(
-    (criticV2?.implements_acceptance_criteria ?? []).map((c) => [
-      c.criterion,
-      c,
-    ]),
-  );
+  // The critic receives the criteria in order and returns one verdict per
+  // criterion in the SAME order — but it paraphrases the text (e.g. "returns
+  // tasks added with" vs "returns tasks that were added with"). The old exact
+  // string-keyed join therefore missed every row and printed "Not adjudicated"
+  // even when all criteria scored clearly_yes (observed on PR #23). Join by
+  // exact text first (handles any reorder), fall back to index (handles the
+  // paraphrase), and only show "Not adjudicated" when the critic genuinely
+  // returned fewer verdicts than there are criteria.
+  const verdicts = criticV2?.implements_acceptance_criteria ?? [];
+  const byText = new Map(verdicts.map((c) => [c.criterion.trim(), c]));
 
   const rows = criteria
-    .map((c) => {
-      const hit = verdictByCriterion.get(c);
+    .map((c, i) => {
+      const hit = byText.get(c.trim()) ?? verdicts[i];
       if (!hit) {
         return `| ${escapePipe(c)} | _Not adjudicated_ | _Critic v2 did not produce a verdict for this criterion._ |`;
       }
@@ -203,4 +206,17 @@ ${rows}
 
 function escapePipe(s: string): string {
   return s.replace(/\|/g, "\\|").replace(/\n/g, " ");
+}
+
+// Defang model- or user-generated text embedded inline in the PR markdown:
+// collapse newlines (so a value can't break out of its table row / list item)
+// and neutralize the characters that would corrupt rendering — backticks
+// (code-fence breakout), pipes (table breakout), and angle brackets (HTML).
+function escapeInline(s: string): string {
+  return s
+    .replace(/[\r\n]+/g, " ")
+    .replace(/`/g, "\\`")
+    .replace(/\|/g, "\\|")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
