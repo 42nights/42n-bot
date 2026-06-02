@@ -1,5 +1,5 @@
 import { searchCorpus, type CorpusHit, refreshChatCorpus } from "./corpus";
-import { runClaudeHeadless } from "../claude/headless";
+import { askAnthropic } from "./llm";
 import { renderLiveRunsContext, liveRuns } from "./live-runs";
 
 const SYSTEM = `You are an assistant that answers questions about a coding bot
@@ -59,9 +59,9 @@ export async function answerChat(question: string): Promise<ChatAnswer> {
 
   const prompt = `${liveCtx ? liveCtx + "\n\n" : ""}<context>\n${ctx}\n</context>\n\nQuestion: ${question}`;
 
-  const result = await runClaudeHeadless({
+  const result = await askAnthropic({
+    system: SYSTEM,
     prompt,
-    systemPromptAppend: SYSTEM,
     timeoutMs: 60_000,
   });
 
