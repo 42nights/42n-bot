@@ -106,7 +106,7 @@ function postValidate(
 }
 
 export async function runUnderstand(opts: {
-  runId: number;
+  runId: string;
   issue: IssueForPrompt;
   cwd: string;
   costBudgetUsd?: number;

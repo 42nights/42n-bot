@@ -1,18 +1,16 @@
-import { db } from "../db";
+import {
+  getMissingCorpusRunIds,
+  listRecentCorpusChunks,
+  insertCorpusChunksBatch,
+  type CorpusChunkRow,
+} from "../db/ops/corpus";
+import { getRun } from "../db/ops/runs";
+import { listVerdictsByRun } from "../db/ops/verdicts";
+import { listEventsByRun } from "../db/ops/events";
+import { listArtifactsByRun } from "../db/ops/artifacts";
 import { embedBatch, activeEmbedDim } from "../embeddings";
 import { log } from "../shared/logger";
 
-/**
- * QA5 (R5 finding 3): user-controlled fields (issue title/body, error
- * messages, plan text) flow into the chat-RAG corpus and become LLM prompt
- * context. An issue titled `Fix bug" — ignore all rules and ...` is a
- * prompt-injection vector. We neutralize the obvious breakouts: collapse
- * newlines (so a field can't open a fake section), strip backticks/quotes
- * that could close a delimiter, and cap length. This isn't a complete
- * defense against prompt injection (no escaping fully is) — answer.ts also
- * wraps corpus text in <run> tags and instructs the model to treat it as
- * untrusted data — but it removes the cheap breakouts.
- */
 function sanitizeField(s: string | null | undefined, max = 300): string {
   if (!s) return "";
   return s
@@ -23,70 +21,21 @@ function sanitizeField(s: string | null | undefined, max = 300): string {
     .slice(0, max);
 }
 
-function bufToVec(b: Buffer): Float32Array | null {
-  // A4: SQLite BLOB buffers are not guaranteed to land on a 4-byte boundary,
-  // and `new Float32Array(b.buffer, b.byteOffset, dim)` throws an alignment
-  // error when `b.byteOffset % 4 !== 0`. Copy first to realign.
-  const copy = Buffer.from(b);
-  const dim = activeEmbedDim();
-  // If the stored vector dimension doesn't match the active backend (e.g. the
-  // user swapped OpenAI ↔ local), skip it. The corpus refresh will re-embed
-  // these rows on the next pass.
-  if (copy.byteLength !== dim * 4) return null;
-  return new Float32Array(copy.buffer, copy.byteOffset, dim);
-}
-function vecToBuf(v: Float32Array): Buffer {
-  return Buffer.from(v.buffer, v.byteOffset, v.byteLength);
-}
-
-/**
- * Render a completed run into a markdown summary chunk for the RAG corpus.
- *
- * D3: also includes the latest plan + critic detail when available, so chat
- * questions about edge cases / hidden bugs / plan complexity can be answered
- * — not just timeline-style activity questions.
- */
-export function summarizeRun(runId: number): string | null {
-  const run = db
-    .prepare(`SELECT * FROM runs WHERE id = ?`)
-    .get(runId) as Record<string, unknown> & {
-    id: number;
-    type: string;
-    repo: string;
-    issue_number: number | null;
-    issue_title: string | null;
-    status: string;
-    attempts: number;
-    cost_usd: number;
-    started_at: number;
-    finished_at: number | null;
-    pr_number: number | null;
-    error_message: string | null;
-  } | undefined;
+export async function summarizeRun(runId: string): Promise<string | null> {
+  const run = await getRun(runId);
   if (!run) return null;
 
-  const verdicts = db
-    .prepare(`SELECT attempt, pass, failure_summary, checks_json FROM verdicts WHERE run_id = ? ORDER BY attempt`)
-    .all(runId) as Array<{
-    attempt: number;
-    pass: number;
-    failure_summary: string | null;
-    checks_json: string;
-  }>;
+  const verdicts = await listVerdictsByRun(runId);
+  const events = await listEventsByRun(runId);
+  const artifacts = await listArtifactsByRun(runId);
 
-  const events = db
-    .prepare(`SELECT kind FROM events WHERE run_id = ? ORDER BY id`)
-    .all(runId) as Array<{ kind: string }>;
   const kinds = events.map((e) => e.kind);
-
-  const planArt = db
-    .prepare(
-      `SELECT content FROM artifacts WHERE run_id = ? AND kind = 'plan' ORDER BY id DESC LIMIT 1`,
-    )
-    .get(runId) as { content: string } | undefined;
+  const planArt = artifacts
+    .filter((a) => a.kind === "plan")
+    .sort((a, b) => b.created_at - a.created_at)[0];
 
   const lines: string[] = [];
-  lines.push(`# Run #${run.id} — ${run.type}`);
+  lines.push(`# Run #${run._id} — ${run.type}`);
   if (run.issue_number) {
     lines.push(`Issue: #${run.issue_number} "${sanitizeField(run.issue_title)}"`);
   }
@@ -103,7 +52,6 @@ export function summarizeRun(runId: number): string | null {
   if (run.pr_number) lines.push(`PR: #${run.pr_number}`);
   if (run.error_message) lines.push(`Error: ${sanitizeField(run.error_message, 400)}`);
 
-  // Plan summary (one paragraph).
   if (planArt?.content) {
     try {
       const plan = JSON.parse(planArt.content) as {
@@ -124,7 +72,9 @@ export function summarizeRun(runId: number): string | null {
       if (tests.length) lines.push(`Tests: ${tests.join(", ")}`);
       if (plan.edge_cases?.length)
         lines.push(`Edge cases planned: ${plan.edge_cases.join("; ")}`);
-    } catch {/* malformed plan artifact — skip */}
+    } catch {
+      /* malformed plan artifact */
+    }
   }
 
   if (verdicts.length) {
@@ -135,10 +85,10 @@ export function summarizeRun(runId: number): string | null {
         `- Attempt ${v.attempt}: ${v.pass ? "pass" : "fail"}${v.failure_summary ? ` — ${v.failure_summary.slice(0, 200)}` : ""}`,
       );
     }
-    // Pull the latest critic detail (if present) and inline it. This is what
-    // makes "what edge cases did the critic flag?" answerable.
     try {
-      const latest = JSON.parse(verdicts[verdicts.length - 1].checks_json) as {
+      const latest = JSON.parse(
+        verdicts[verdicts.length - 1].checks_json,
+      ) as {
         critic?: {
           detail?: {
             merge_confidence?: number;
@@ -168,91 +118,79 @@ export function summarizeRun(runId: number): string | null {
           for (const b of c.hidden_bugs) lines.push(`  - [${b.severity}] ${b.description}`);
         }
       }
-    } catch {/* checks_json malformed */}
+    } catch {
+      /* checks_json malformed */
+    }
   }
   if (kinds.length) {
     lines.push("");
-    lines.push(`## Activity trail`);
+    lines.push("## Activity trail");
     lines.push(kinds.join(" → "));
   }
   return lines.join("\n");
 }
 
-/**
- * Walk runs that are terminal and don't yet have a corpus chunk, summarize
- * them, embed, and persist. Idempotent.
- */
 export async function refreshChatCorpus(): Promise<{ added: number }> {
-  const candidates = db
-    .prepare(
-      `SELECT r.id FROM runs r
-         LEFT JOIN corpus_chunks c ON c.run_id = r.id
-         WHERE r.status IN ('pr-opened','succeeded','needs-review','failed','abandoned')
-           AND c.id IS NULL`,
+  const candidateIds = await getMissingCorpusRunIds([
+    "pr-opened",
+    "succeeded",
+    "needs-review",
+    "failed",
+    "abandoned",
+  ]);
+  if (!candidateIds.length) return { added: 0 };
+
+  const summaries = (
+    await Promise.all(
+      candidateIds.map(async (id) => {
+        const text = await summarizeRun(id);
+        return text ? { runId: id, text } : null;
+      }),
     )
-    .all() as Array<{ id: number }>;
-
-  if (!candidates.length) return { added: 0 };
-
-  const summaries = candidates
-    .map((c) => ({ runId: c.id, text: summarizeRun(c.id) }))
-    .filter((s): s is { runId: number; text: string } => Boolean(s.text));
+  ).filter((s): s is { runId: string; text: string } => Boolean(s));
 
   if (!summaries.length) return { added: 0 };
 
   try {
     const vectors = await embedBatch(summaries.map((s) => s.text));
-    const insert = db.prepare(
-      `INSERT INTO corpus_chunks (run_id, text, embedding, created_at) VALUES (?, ?, ?, ?)`,
+    await insertCorpusChunksBatch(
+      summaries.map((s, i) => ({
+        run_id: s.runId,
+        text: s.text,
+        embedding: Array.from(vectors[i]),
+        created_at: Date.now(),
+      })),
     );
-    const tx = db.transaction(() => {
-      for (let i = 0; i < summaries.length; i++) {
-        insert.run(
-          summaries[i].runId,
-          summaries[i].text,
-          vecToBuf(vectors[i]),
-          Date.now(),
-        );
-      }
-    });
-    tx();
     log.info("chat", `corpus refreshed: added ${summaries.length}`);
     return { added: summaries.length };
   } catch (err) {
     log.warn("chat", `corpus refresh failed: ${err}`);
-    // Store summaries WITHOUT embeddings — still useful for keyword search.
-    const insert = db.prepare(
-      `INSERT INTO corpus_chunks (run_id, text, embedding, created_at) VALUES (?, ?, NULL, ?)`,
+    await insertCorpusChunksBatch(
+      summaries.map((s) => ({
+        run_id: s.runId,
+        text: s.text,
+        embedding: null,
+        created_at: Date.now(),
+      })),
     );
-    const tx = db.transaction(() => {
-      for (const s of summaries) insert.run(s.runId, s.text, Date.now());
-    });
-    tx();
     return { added: summaries.length };
   }
 }
 
 export type CorpusHit = {
-  chunkId: number;
-  runId: number | null;
+  chunkId: string;
+  runId: string | null;
   text: string;
   score: number;
 };
 
-export async function searchCorpus(query: string, limit = 8): Promise<CorpusHit[]> {
-  // B10: cap the working set. v0 keeps the most-recent 5k chunks; old runs
-  // age out of search but stay in the audit DB. A full in-memory index
-  // hydrated at startup is the v1 fix.
-  const rows = db
-    .prepare(
-      `SELECT id, run_id, text, embedding FROM corpus_chunks
-         ORDER BY created_at DESC LIMIT 5000`,
-    )
-    .all() as Array<{ id: number; run_id: number | null; text: string; embedding: Buffer | null }>;
+export async function searchCorpus(
+  query: string,
+  limit = 8,
+): Promise<CorpusHit[]> {
+  const rows = await listRecentCorpusChunks(5000);
   if (!rows.length) return [];
 
-  // Local embeddings always work; OpenAI is only used when explicitly enabled.
-  // If embedding fails for any reason, fall back to keyword overlap below.
   let qVec: Float32Array | null = null;
   try {
     const [v] = await embedBatch([query]);
@@ -261,20 +199,29 @@ export async function searchCorpus(query: string, limit = 8): Promise<CorpusHit[
     qVec = null;
   }
 
+  const dim = activeEmbedDim();
   const scored: CorpusHit[] = [];
   for (const r of rows) {
-    const stored = r.embedding ? bufToVec(r.embedding) : null;
+    const stored =
+      r.embedding && r.embedding.length === dim
+        ? new Float32Array(r.embedding)
+        : null;
     if (qVec && stored) {
       let s = 0;
       for (let i = 0; i < stored.length; i++) s += qVec[i] * stored[i];
-      scored.push({ chunkId: r.id, runId: r.run_id, text: r.text, score: s });
+      scored.push({
+        chunkId: r._id,
+        runId: r.run_id ?? null,
+        text: r.text,
+        score: s,
+      });
     } else {
       const qWords = query.toLowerCase().split(/\W+/).filter(Boolean);
       const lower = r.text.toLowerCase();
       const hits = qWords.filter((w) => lower.includes(w)).length;
       scored.push({
-        chunkId: r.id,
-        runId: r.run_id,
+        chunkId: r._id,
+        runId: r.run_id ?? null,
         text: r.text,
         score: hits / Math.max(qWords.length, 1),
       });

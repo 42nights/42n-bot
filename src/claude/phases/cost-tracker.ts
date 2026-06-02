@@ -1,29 +1,23 @@
-import { db } from "../../db";
+import { insertPhaseCost } from "../../db/ops/phaseCosts";
 import type { PhaseName } from "./types";
 
-/**
- * Persist a phase's cost + duration + outcome to the `phase_costs` table.
- * Every phase wrapper calls this on completion (success or failure) so we
- * can later answer "which phase is the expensive one" on the dashboard.
- */
 export function recordPhaseCost(args: {
-  runId: number;
+  runId: string;
   phase: PhaseName;
   attempt?: number;
   costUsd: number;
   durationMs: number;
   ok: boolean;
 }): void {
-  db.prepare(
-    `INSERT INTO phase_costs (run_id, phase, attempt, cost_usd, duration_ms, ok, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    args.runId,
-    args.phase,
-    args.attempt ?? 1,
-    args.costUsd,
-    args.durationMs,
-    args.ok ? 1 : 0,
-    Date.now(),
-  );
+  insertPhaseCost({
+    run_id: args.runId,
+    phase: args.phase,
+    attempt: args.attempt ?? 1,
+    cost_usd: args.costUsd,
+    duration_ms: args.durationMs,
+    ok: args.ok ? 1 : 0,
+  }).catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error(`recordPhaseCost failed:`, err);
+  });
 }

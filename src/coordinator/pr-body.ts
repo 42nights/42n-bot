@@ -36,7 +36,7 @@ export function renderPrBody(args: {
   plan: Plan;
   verdict: Verdict;
   attempts: number;
-  runId: number;
+  runId: string;
   costUsd: number;
   needsReview: boolean;
   // v2 fields — optional for back-compat.

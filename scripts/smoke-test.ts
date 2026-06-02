@@ -19,10 +19,10 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { ensureSchema } from "../src/db/migrate";
-import { db } from "../src/db";
 import { runImplementer } from "../src/coordinator/implementer";
 import { botConfig } from "../bot.config";
+import { getRun } from "../src/db/ops/runs";
+import { listVerdictsByRun } from "../src/db/ops/verdicts";
 
 type Fixture = {
   owner: string;
@@ -40,7 +40,6 @@ async function main() {
   }
   const fixture = JSON.parse(fs.readFileSync(path.resolve(fp), "utf8")) as Fixture;
 
-  ensureSchema();
   const repoDir = process.env.REPO_DIR;
   if (!repoDir) {
     console.error("REPO_DIR not set");
@@ -66,12 +65,9 @@ async function main() {
   });
   const durMs = Date.now() - t0;
 
-  const run = db
-    .prepare(`SELECT cost_usd, status FROM runs WHERE id = ?`)
-    .get(result.runId) as { cost_usd: number; status: string };
-  const verdictCount = (
-    db.prepare(`SELECT COUNT(*) AS n FROM verdicts WHERE run_id = ?`).get(result.runId) as { n: number }
-  ).n;
+  const run = await getRun(result.runId);
+  const verdicts = run ? await listVerdictsByRun(result.runId) : [];
+  const verdictCount = verdicts.length;
 
   const assertions: Array<{ name: string; ok: boolean; got: unknown }> = [
     {
@@ -81,8 +77,8 @@ async function main() {
     },
     {
       name: "cost ≤ 2x perRun budget",
-      ok: run.cost_usd <= botConfig.budgets.perRunUsd * 2,
-      got: `$${run.cost_usd.toFixed(4)}`,
+      ok: (run?.cost_usd ?? 0) <= botConfig.budgets.perRunUsd * 2,
+      got: `$${(run?.cost_usd ?? 0).toFixed(4)}`,
     },
     {
       name: "at least one verdict persisted",

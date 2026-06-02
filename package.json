@@ -16,7 +16,9 @@
     "seed:demo": "node --env-file=.env.local --import tsx scripts/seed-demo.ts",
     "bot": "npm run build:bot && node --env-file=.env.local dist/src/coordinator/index.js",
     "smoke": "npm run build:bot && node --env-file=.env.local dist/scripts/smoke-test.js",
-    "go": "concurrently --restart-tries 10 --restart-after 1500 --names dash,bot --prefix-colors blue,magenta \"npm:dev\" \"npm:bot\""
+    "go": "concurrently --restart-tries 10 --restart-after 1500 --names dash,bot --prefix-colors blue,magenta \"npm:dev\" \"npm:bot\"",
+    "swebench": "npm run build:bot && node dist/src/swebench/harness.js",
+    "swebench:grade-local": "npm run build:bot && node dist/src/swebench/grade-local.js"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
@@ -29,11 +31,11 @@
     "@radix-ui/react-slot": "^1.1.0",
     "@radix-ui/react-tabs": "^1.1.2",
     "@types/canvas-confetti": "^1.9.0",
-    "better-sqlite3": "^11.7.0",
     "canvas-confetti": "^1.9.4",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
+    "convex": "^1.40.0",
     "cron-parser": "^5.5.0",
     "diff": "^7.0.0",
     "execa": "^9.6.1",
@@ -52,7 +54,6 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
     "@types/diff": "^7.0.2",
     "@types/node": "^22.9.0",
     "@types/react": "^19.0.0",

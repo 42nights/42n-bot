@@ -9,7 +9,7 @@ import { recordPhaseCost } from "./cost-tracker";
 import { ReproduceSchema, type Reproduce, type Understanding } from "./types";
 
 export async function runReproduce(opts: {
-  runId: number;
+  runId: string;
   issue: IssueForPrompt;
   understanding: Understanding;
   cwd: string;

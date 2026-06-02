@@ -1,58 +1,34 @@
-import { db } from "./db";
 import { ghFor } from "./github/client";
 import { botConfig, type BotRepo } from "../bot.config";
+import {
+  listRepos,
+  listEnabledRepos,
+  getRepoById,
+  getRepoByOwnerName,
+  upsertRepo,
+  updateRepo,
+  deleteRepo,
+  type ConnectedRepo,
+} from "./db/ops/repos";
 
-export type ConnectedRepo = {
-  id: number;
-  owner: string;
-  name: string;
-  default_branch: string;
-  enabled: number;
-  repo_dir: string | null;
-  repo_url: string | null;
-  description: string | null;
-  created_at: number;
-  updated_at: number;
-};
+export type { ConnectedRepo };
 
-/**
- * Single source of truth for the repos the bot watches.
- *
- * Storage: SQLite `repos` table. Falls back to bot.config.repos when the DB is
- * empty so a fresh install still works without UI setup.
- *
- * The DB shape mirrors BotRepo + extra fields the UI surfaces:
- *  - repo_dir: absolute path to the local clone (where worktrees branch from)
- *  - repo_url: html_url from GitHub (for display)
- *  - description: from GitHub
- */
-export function listConnectedRepos(): ConnectedRepo[] {
-  const rows = db
-    .prepare(
-      `SELECT * FROM repos ORDER BY enabled DESC, updated_at DESC`,
-    )
-    .all() as ConnectedRepo[];
-  return rows;
+export async function listConnectedRepos(): Promise<ConnectedRepo[]> {
+  return listRepos();
 }
 
-/**
- * Repos the coordinator should actually drive. Reads the DB first; falls back
- * to bot.config when nothing is connected yet so existing flows still work.
- */
-export function activeRepos(): Array<
-  BotRepo & { repo_dir: string | null; id: number | null }
+export async function activeRepos(): Promise<
+  Array<BotRepo & { repo_dir: string | null; id: string | null }>
 > {
-  const connected = db
-    .prepare(`SELECT * FROM repos WHERE enabled = 1`)
-    .all() as ConnectedRepo[];
+  const connected = await listEnabledRepos();
   if (connected.length) {
     return connected.map((r) => ({
-      id: r.id,
+      id: r._id,
       owner: r.owner,
       name: r.name,
       defaultBranch: r.default_branch,
       enabled: r.enabled === 1,
-      repo_dir: r.repo_dir,
+      repo_dir: r.repo_dir ?? null,
     }));
   }
   return botConfig.repos.map((r) => ({
@@ -62,18 +38,10 @@ export function activeRepos(): Array<
   }));
 }
 
-export function getConnectedRepo(id: number): ConnectedRepo | null {
-  return (
-    (db.prepare(`SELECT * FROM repos WHERE id = ?`).get(id) as ConnectedRepo) ??
-    null
-  );
+export async function getConnectedRepo(id: string): Promise<ConnectedRepo | null> {
+  return getRepoById(id);
 }
 
-/**
- * Add a repo. Validates it exists and the GitHub token can see it before
- * persisting. Throws on auth/access failure so the UI can surface a useful
- * error.
- */
 export async function connectRepo(args: {
   owner: string;
   name: string;
@@ -83,43 +51,26 @@ export async function connectRepo(args: {
   const name = args.name.trim();
   if (!owner || !name) throw new Error("owner + name required");
 
-  // Probe GitHub. Uses installation token if the App is on this repo, falls
-  // back to the PAT otherwise. Both validates auth and pulls default_branch.
   const probe = await ghFor(owner, name).repos.get({ owner, repo: name });
 
   const now = Date.now();
-  db.prepare(
-    `INSERT INTO repos (owner, name, default_branch, enabled, repo_dir, repo_url, description, created_at, updated_at)
-     VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)
-     ON CONFLICT(owner, name) DO UPDATE SET
-       default_branch=excluded.default_branch,
-       enabled=1,
-       repo_dir=COALESCE(excluded.repo_dir, repos.repo_dir),
-       repo_url=excluded.repo_url,
-       description=excluded.description,
-       updated_at=excluded.updated_at`,
-  ).run(
+  const id = await upsertRepo({
     owner,
     name,
-    probe.data.default_branch,
-    args.repoDir ?? null,
-    probe.data.html_url,
-    probe.data.description ?? null,
-    now,
-    now,
-  );
-  const row = db
-    .prepare(`SELECT * FROM repos WHERE owner=? AND name=?`)
-    .get(owner, name) as ConnectedRepo;
+    default_branch: probe.data.default_branch,
+    enabled: 1,
+    repo_dir: args.repoDir ?? null,
+    repo_url: probe.data.html_url,
+    description: probe.data.description ?? null,
+    created_at: now,
+    updated_at: now,
+  });
+  const row = await getRepoByOwnerName(owner, name);
+  if (!row) throw new Error("upsert succeeded but row missing");
   return row;
 }
 
-/**
- * Upsert a repo discovered via the GitHub App install callback. Unlike
- * `connectRepo`, this doesn't re-probe GitHub — the caller already has the
- * full metadata from the installation listing.
- */
-export function upsertRepoFromInstallation(args: {
+export async function upsertRepoFromInstallation(args: {
   owner: string;
   name: string;
   defaultBranch: string;
@@ -127,52 +78,38 @@ export function upsertRepoFromInstallation(args: {
   htmlUrl: string;
   description: string | null;
   repoDir?: string | null;
-}): ConnectedRepo {
+}): Promise<ConnectedRepo> {
   const now = Date.now();
-  db.prepare(
-    `INSERT INTO repos (owner, name, default_branch, enabled, repo_dir, repo_url, description, installation_id, created_at, updated_at)
-     VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(owner, name) DO UPDATE SET
-       default_branch=excluded.default_branch,
-       enabled=1,
-       repo_dir=COALESCE(excluded.repo_dir, repos.repo_dir),
-       repo_url=excluded.repo_url,
-       description=excluded.description,
-       installation_id=excluded.installation_id,
-       updated_at=excluded.updated_at`,
-  ).run(
-    args.owner,
-    args.name,
-    args.defaultBranch,
-    args.repoDir ?? null,
-    args.htmlUrl,
-    args.description,
-    args.installationId,
-    now,
-    now,
-  );
-  return db
-    .prepare(`SELECT * FROM repos WHERE owner=? AND name=?`)
-    .get(args.owner, args.name) as ConnectedRepo;
+  await upsertRepo({
+    owner: args.owner,
+    name: args.name,
+    default_branch: args.defaultBranch,
+    enabled: 1,
+    repo_dir: args.repoDir ?? null,
+    repo_url: args.htmlUrl,
+    description: args.description,
+    installation_id: args.installationId,
+    created_at: now,
+    updated_at: now,
+  });
+  const row = await getRepoByOwnerName(args.owner, args.name);
+  if (!row) throw new Error("upsert succeeded but row missing");
+  return row;
 }
 
-export function updateConnectedRepo(
-  id: number,
+export async function updateConnectedRepo(
+  id: string,
   patch: { enabled?: boolean; repo_dir?: string | null },
-): ConnectedRepo | null {
-  const existing = getConnectedRepo(id);
+): Promise<ConnectedRepo | null> {
+  const existing = await getRepoById(id);
   if (!existing) return null;
-  const enabled =
+  const enabledNum =
     patch.enabled === undefined ? existing.enabled : patch.enabled ? 1 : 0;
   const repoDir =
     patch.repo_dir === undefined ? existing.repo_dir : patch.repo_dir;
-  db.prepare(
-    `UPDATE repos SET enabled=?, repo_dir=?, updated_at=? WHERE id=?`,
-  ).run(enabled, repoDir, Date.now(), id);
-  return getConnectedRepo(id);
+  return updateRepo(id, { enabled: enabledNum, repo_dir: repoDir ?? null });
 }
 
-export function deleteConnectedRepo(id: number): boolean {
-  const r = db.prepare(`DELETE FROM repos WHERE id = ?`).run(id);
-  return r.changes > 0;
+export async function deleteConnectedRepo(id: string): Promise<boolean> {
+  return deleteRepo(id);
 }

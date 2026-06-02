@@ -1,33 +1,18 @@
 import { NextRequest } from "next/server";
-import { ensureSchema } from "@/src/db/migrate";
 import { verifyGitHubSignature, type GitHubEvent } from "@/src/github/webhook";
 import { readWebhookSecret } from "@/src/github/app";
 import { log } from "@/src/shared/logger";
-import { db } from "@/src/db";
 import { requestDispatch } from "@/src/coordinator/dispatch";
+import { claimWebhookDelivery } from "@/src/db/ops/webhookDeliveries";
+import { ensureSystemRun } from "@/src/db/ops/runs";
+import { insertEvent } from "@/src/db/ops/events";
+import { getRunByPrNumber, patchRun } from "@/src/db/ops/runs";
 
 export const runtime = "nodejs";
 
-/**
- * Handles GitHub webhooks. Verifies HMAC on the raw body, persists every
- * delivery as an event row (for audit + replay), then routes:
- *
- *  - issues.opened / issues.labeled with our request label
- *      → flip the implementer dispatch signal so the coordinator polls
- *        within 2s instead of waiting up to 60s for the next interval tick.
- *  - pull_request.closed with merged:true
- *      → look up the run by pr_number, mark succeeded, schedule worktree
- *        cleanup. (Spec §18.4 — A9 in the review.)
- *  - everything else → log + 200.
- *
- * Fast-acks. Heavy work happens in the coordinator process.
- */
 export async function POST(req: NextRequest) {
-  ensureSchema();
   const raw = await req.text();
-  // QA3 (R3 finding 10): read the secret from the App credentials (manifest
-  // flow) first, falling back to the env var for the PAT/manual path.
-  const secret = readWebhookSecret();
+  const secret = await readWebhookSecret();
   if (!secret) {
     return new Response("no webhook secret configured", { status: 500 });
   }
@@ -40,19 +25,9 @@ export async function POST(req: NextRequest) {
     return new Response("forbidden", { status: 403 });
   }
 
-  // QA3 (R3 finding 23) + QA4: replay protection via an indexed UNIQUE
-  // delivery_id. The INSERT ... ON CONFLICT atomically claims the delivery —
-  // if it was already seen, `changes === 0` and we bail. Exact match on a
-  // bound parameter, so no LIKE-wildcard or injection surface (and the
-  // deliveryId is only trusted post-HMAC anyway).
   if (deliveryId) {
-    const claim = db
-      .prepare(
-        `INSERT INTO webhook_deliveries (delivery_id, event, received_at)
-         VALUES (?, ?, ?) ON CONFLICT(delivery_id) DO NOTHING`,
-      )
-      .run(deliveryId, eventName, Date.now());
-    if (claim.changes === 0) {
+    const claimed = await claimWebhookDelivery(deliveryId, eventName);
+    if (!claimed) {
       log.info("webhook", `duplicate delivery ${deliveryId} — ignoring`);
       return new Response("duplicate", { status: 200 });
     }
@@ -65,22 +40,15 @@ export async function POST(req: NextRequest) {
     return new Response("bad json", { status: 400 });
   }
 
-  // Persist a sliver so we have an audit trail (run_id=0 = system events).
-  db.prepare(
-    `INSERT INTO runs (id, type, repo, status, started_at)
-     SELECT 0, 'system', '_system', 'succeeded', ?
-     WHERE NOT EXISTS (SELECT 1 FROM runs WHERE id = 0)`,
-  ).run(Date.now());
-  db.prepare(
-    `INSERT INTO events (run_id, ts, kind, payload_json)
-     VALUES (0, ?, ?, ?)`,
-  ).run(
-    Date.now(),
-    `gh.${eventName}.${payload.action ?? "_"}`,
-    JSON.stringify({ deliveryId, payload }),
+  // Persist an audit event on the system run.
+  const systemRunId = await ensureSystemRun(Date.now());
+  await insertEvent(
+    systemRunId,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    `gh.${eventName}.${(payload as any).action ?? "_"}` as any,
+    { deliveryId, payload },
   );
 
-  // A3/B5: ask the coordinator to poll NOW rather than waiting up to 60s.
   if (
     eventName === "issues" &&
     (payload.action === "labeled" || payload.action === "opened")
@@ -89,29 +57,23 @@ export async function POST(req: NextRequest) {
     log.info("webhook", `→ implementer dispatch (action=${payload.action})`);
   }
 
-  // A9: a PR merge closes the loop. Mark the run, leave worktree cleanup to
-  // the coordinator's reap cron so we don't block the webhook.
   if (
     eventName === "pull_request" &&
     payload.action === "closed" &&
     payload.pull_request?.merged === true
   ) {
     const prNumber = payload.pull_request.number;
-    const row = db
-      .prepare(
-        `SELECT id, worktree_path FROM runs
-           WHERE pr_number = ? AND status IN ('pr-opened','needs-review')
-           ORDER BY started_at DESC LIMIT 1`,
-      )
-      .get(prNumber) as { id: number; worktree_path: string | null } | undefined;
-    if (row) {
-      db.prepare(
-        `UPDATE runs SET status='succeeded', finished_at=? WHERE id=?`,
-      ).run(Date.now(), row.id);
-      db.prepare(
-        `INSERT INTO events (run_id, ts, kind, payload_json) VALUES (?, ?, 'pr.merged', ?)`,
-      ).run(row.id, Date.now(), JSON.stringify({ prNumber }));
-      log.info("webhook", `PR #${prNumber} merged → run #${row.id} succeeded`);
+    const row = await getRunByPrNumber(prNumber);
+    if (
+      row &&
+      (row.status === "pr-opened" || row.status === "needs-review")
+    ) {
+      await patchRun(row._id, {
+        status: "succeeded",
+        finished_at: Date.now(),
+      });
+      await insertEvent(row._id, "pr.merged", { prNumber });
+      log.info("webhook", `PR #${prNumber} merged → run #${row._id} succeeded`);
     } else {
       log.info("webhook", `PR #${prNumber} merged but no matching run row`);
     }

@@ -25,7 +25,6 @@ async function git(...args: string[]) {
 }
 
 let runVerification: typeof import("../src/verification").runVerification;
-let ensureSchema: typeof import("../src/db/migrate").ensureSchema;
 
 beforeAll(async () => {
   fs.mkdirSync(repoDir, { recursive: true });
@@ -89,8 +88,6 @@ describe("sub", () => {
   );
 
   ({ runVerification } = await import("../src/verification"));
-  ({ ensureSchema } = await import("../src/db/migrate"));
-  ensureSchema();
 });
 
 afterAll(() => {
@@ -115,16 +112,14 @@ describe("verification harness — end to end", () => {
     }
     if (!canRunVitest) return;
 
-    // Insert a real run row so emitEvent() doesn't fail the FK constraint.
-    // The harness writes events with run_id = runId; that needs a parent.
-    const { db } = await import("../src/db");
-    const info = db
-      .prepare(
-        `INSERT INTO runs (type, repo, status, started_at)
-           VALUES ('implement', 'fixture/repo', 'verifying', ?)`,
-      )
-      .run(Date.now());
-    const runId = Number(info.lastInsertRowid);
+    // Create a real run row so emitEvent() has an anchor.
+    const { createRun } = await import("../src/db/ops/runs");
+    const runId = await createRun({
+      type: "implement",
+      repo: "fixture/repo",
+      status: "verifying",
+      started_at: Date.now(),
+    });
 
     // Seed an issue + a tiny plan that matches what we wrote.
     const verdict = await runVerification({

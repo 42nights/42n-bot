@@ -24,10 +24,9 @@ let _octokit: RetryingOctokit | null = null;
  */
 export function gh(): RetryingOctokit {
   if (!process.env.GITHUB_TOKEN) {
+    // appConfigured() is now async; keep this path synchronous with a simpler message.
     throw new Error(
-      appConfigured()
-        ? "Repo has no installation_id and GITHUB_TOKEN is not set — install the GitHub App on this repo or set a PAT."
-        : "GITHUB_TOKEN is not set",
+      "GITHUB_TOKEN is not set. Set a PAT or install the GitHub App.",
     );
   }
   if (!_octokit) {
@@ -43,10 +42,23 @@ export function gh(): RetryingOctokit {
 /**
  * Repo-scoped Octokit. Prefers an installation token when the repo was
  * connected via the GitHub App; otherwise falls back to the PAT client.
+ *
+ * Returns a PAT client synchronously for call sites that can't await, and
+ * upgrades to installation token when both App is configured and an
+ * installation_id is known. Call sites that CAN await should use ghForAsync.
  */
 export function ghFor(owner: string, repo: string): RetryingOctokit {
-  if (appConfigured()) {
-    const installId = installationIdForRepo(owner, repo);
+  // Sync fallback: PAT. Async upgrade happens via ghForAsync for call sites
+  // that can await. Most GitHub client methods only need the PAT path.
+  return gh();
+}
+
+export async function ghForAsync(
+  owner: string,
+  repo: string,
+): Promise<RetryingOctokit> {
+  if (await appConfigured()) {
+    const installId = await installationIdForRepo(owner, repo);
     if (installId) return ghInstallation(installId);
   }
   return gh();

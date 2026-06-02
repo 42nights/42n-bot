@@ -1,57 +1,35 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureSchema } from "@/src/db/migrate";
-import { db } from "@/src/db";
-import { saveAppCreds } from "@/src/github/app";
+import {
+  saveAppCreds,
+  getSetupState,
+  deleteSetupState,
+  pruneSetupStates,
+} from "@/src/github/app";
 import { log } from "@/src/shared/logger";
 
 export const runtime = "nodejs";
 
-/**
- * GitHub App Manifest flow — step 2.
- *
- * GitHub redirects here after the user clicks "Create GitHub App" with
- *   ?code=<exchangeable-code>&state=<our-csrf>
- *
- * We:
- *   1. Validate the state matches one we issued
- *   2. POST to /app-manifests/<code>/conversions to get full creds
- *   3. Persist them to app_credentials (id=1)
- *   4. Bounce the user to /repos so they can hit "Install" next
- */
 export async function GET(req: NextRequest) {
-  ensureSchema();
-
   const url = new URL(req.url);
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
 
   if (!code || !state) {
-    return NextResponse.redirect(
-      new URL("/repos?setup=missing-code", req.url),
-    );
+    return NextResponse.redirect(new URL("/repos?setup=missing-code", req.url));
   }
 
-  const stateRow = db
-    .prepare(`SELECT created_at FROM app_setup_state WHERE state = ?`)
-    .get(state) as { created_at: number } | undefined;
+  const stateRow = await getSetupState(state);
   if (!stateRow) {
     return NextResponse.redirect(new URL("/repos?setup=bad-state", req.url));
   }
-  // GitHub's manifest `code` expires in 60s. We give the user 10 minutes to
-  // get through the form on github.com; older state rows are stale and
-  // shouldn't be honored even if somehow re-played.
+
   const TEN_MIN_MS = 10 * 60 * 1000;
   const ageMs = Date.now() - stateRow.created_at;
-  // One-time use either way.
-  db.prepare(`DELETE FROM app_setup_state WHERE state = ?`).run(state);
-  // Purge any other stale state rows while we have the DB open.
-  db.prepare(`DELETE FROM app_setup_state WHERE created_at < ?`).run(
-    Date.now() - TEN_MIN_MS,
-  );
+  await deleteSetupState(state);
+  await pruneSetupStates(Date.now() - TEN_MIN_MS);
+
   if (ageMs > TEN_MIN_MS) {
-    return NextResponse.redirect(
-      new URL("/repos?setup=state-expired", req.url),
-    );
+    return NextResponse.redirect(new URL("/repos?setup=state-expired", req.url));
   }
 
   try {
@@ -88,7 +66,7 @@ export async function GET(req: NextRequest) {
       html_url: string;
     };
 
-    saveAppCreds({
+    await saveAppCreds({
       appId: data.id,
       slug: data.slug,
       clientId: data.client_id,

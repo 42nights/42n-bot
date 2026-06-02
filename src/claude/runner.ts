@@ -23,7 +23,7 @@ function spawnEnv(): NodeJS.ProcessEnv {
 export type ClaudeRunMode = "plan" | "implement" | "critic" | "review";
 
 export type ClaudeRunOptions = {
-  runId: number;
+  runId: string;
   mode: ClaudeRunMode;
   prompt: string;
   cwd: string;
@@ -325,7 +325,7 @@ export async function runClaudeCode(opts: ClaudeRunOptions): Promise<ClaudeRunRe
  * mutually exclusive in Claude Code. No streaming, just a single result.
  */
 export async function runStructuredPlan<T>(opts: {
-  runId: number;
+  runId: string;
   prompt: string;
   cwd: string;
   schema: z.ZodSchema<T>;

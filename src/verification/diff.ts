@@ -11,14 +11,26 @@ import { botConfig } from "../../bot.config";
  * verification harness — `plan_tests_added` and `diff_size` see only
  * modifications to already-tracked files.
  */
-// We symlink node_modules into each worktree (see orchestrator/deps.ts). Most
-// repos gitignore it, but not all — exclude it from every diff op explicitly so
-// the dependency symlink can never leak into a PR or the diff-size gate.
-const EXCLUDE_DEPS = ":(exclude)node_modules";
+// Dependency + environment junk that must never enter a diff (PR, diff-size
+// gate, or the SWE-bench captured patch). node_modules is symlinked into JS
+// worktrees; .venv / __pycache__ / *.egg-info / *.pyc / .pytest_cache are
+// created in-tree when running Python repos (e.g. the SWE-bench harness's
+// per-instance venv + editable install). Without excluding them, intent-to-add
+// sweeps thousands of files into the diff and the captured patch balloons to MBs.
+const DIFF_EXCLUDES = [
+  ":(exclude)node_modules",
+  ":(exclude).venv",
+  ":(exclude)**/.venv/**",
+  ":(exclude)**/__pycache__/**",
+  ":(exclude)**/*.pyc",
+  ":(exclude)**/*.egg-info/**",
+  ":(exclude)**/*.egg-link",
+  ":(exclude)**/.pytest_cache/**",
+];
 
 export async function getDiffText(cwd: string, baseRef = "HEAD"): Promise<string> {
   await intentToAddUntracked(cwd);
-  const r = await runCmd(["git", "diff", baseRef, "--", ".", EXCLUDE_DEPS], cwd);
+  const r = await runCmd(["git", "diff", baseRef, "--", ".", ...DIFF_EXCLUDES], cwd);
   return r.stdout;
 }
 
@@ -29,7 +41,7 @@ export async function getChangedFiles(
 ): Promise<string[]> {
   await intentToAddUntracked(cwd);
   const r = await runCmd(
-    ["git", "diff", "--name-only", baseRef, "--", ".", EXCLUDE_DEPS],
+    ["git", "diff", "--name-only", baseRef, "--", ".", ...DIFF_EXCLUDES],
     cwd,
   );
   return r.stdout
@@ -44,7 +56,7 @@ export async function getChangedFiles(
  */
 async function intentToAddUntracked(cwd: string): Promise<void> {
   const ls = await runCmd(
-    ["git", "ls-files", "--others", "--exclude-standard", "--", ".", EXCLUDE_DEPS],
+    ["git", "ls-files", "--others", "--exclude-standard", "--", ".", ...DIFF_EXCLUDES],
     cwd,
   );
   const files = ls.stdout

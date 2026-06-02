@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureSchema } from "@/src/db/migrate";
 import {
   deleteCron,
   getCron,
@@ -14,13 +13,12 @@ export async function GET(
   _req: NextRequest,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  ensureSchema();
   const { id } = await ctx.params;
-  const cron = getCron(Number(id));
+  const cron = await getCron(id);
   if (!cron) return NextResponse.json({ error: "not found" }, { status: 404 });
   return NextResponse.json({
     cron,
-    history: listCronRuns(cron.id, 50),
+    history: await listCronRuns(cron._id, 50),
   });
 }
 
@@ -28,7 +26,6 @@ export async function PATCH(
   req: NextRequest,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  ensureSchema();
   const { id } = await ctx.params;
   const body = (await req.json().catch(() => ({}))) as {
     name?: string;
@@ -39,7 +36,7 @@ export async function PATCH(
     enabled?: boolean;
   };
   try {
-    const updated = updateCron(Number(id), body);
+    const updated = await updateCron(id, body);
     if (!updated)
       return NextResponse.json({ error: "not found" }, { status: 404 });
     return NextResponse.json({ ok: true, cron: updated });
@@ -53,9 +50,8 @@ export async function DELETE(
   _req: NextRequest,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  ensureSchema();
   const { id } = await ctx.params;
-  const ok = deleteCron(Number(id));
+  const ok = await deleteCron(id);
   if (!ok) return NextResponse.json({ error: "not found" }, { status: 404 });
   return NextResponse.json({ ok: true });
 }

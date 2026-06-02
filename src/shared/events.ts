@@ -1,4 +1,4 @@
-import { db } from "../db";
+import { insertEvent } from "../db/ops/events";
 
 export type EventKind =
   | "run.created"
@@ -43,8 +43,15 @@ export type EventKind =
   | "replan.failed"
   | "log";
 
-export function emitEvent(runId: number, kind: EventKind, payload: unknown = {}) {
-  db.prepare(
-    `INSERT INTO events (run_id, ts, kind, payload_json) VALUES (?, ?, ?, ?)`,
-  ).run(runId, Date.now(), kind, JSON.stringify(payload));
+export function emitEvent(
+  runId: string,
+  kind: EventKind,
+  payload: unknown = {},
+): void {
+  // Fire-and-forget — the coordinator is a long-running Node process; a
+  // dropped event is less harmful than blocking Claude Code progression.
+  insertEvent(runId, kind, payload).catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error(`emitEvent(${kind}) failed:`, err);
+  });
 }

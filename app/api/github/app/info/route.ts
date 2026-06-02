@@ -5,8 +5,8 @@ export const runtime = "nodejs";
 
 export async function GET() {
   return NextResponse.json({
-    configured: appConfigured(),
-    appName: appName(),
-    installUrl: installUrl(),
+    configured: await appConfigured(),
+    appName: await appName(),
+    installUrl: await installUrl(),
   });
 }

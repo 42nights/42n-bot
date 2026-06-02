@@ -47,7 +47,7 @@ describe("renderPrBody", () => {
     plan,
     verdict,
     attempts: 1,
-    runId: 142,
+    runId: "mock-run-142",
     costUsd: 0.31,
     needsReview: false,
   });
@@ -77,7 +77,7 @@ describe("renderPrBody", () => {
       plan,
       verdict: { ...verdict, pass: false },
       attempts: 3,
-      runId: 142,
+      runId: "mock-run-142",
       costUsd: 1.4,
       needsReview: true,
     });
@@ -144,7 +144,7 @@ describe("renderAcceptanceTable join survives critic paraphrasing", () => {
     plan,
     verdict,
     attempts: 1,
-    runId: 97,
+    runId: "mock-run-97",
     costUsd: 1.29,
     needsReview: false,
     understanding,

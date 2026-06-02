@@ -1,0 +1,13 @@
+node_modules
+.next
+out
+build
+dist
+.git
+data
+.42n-bot-worktrees
+docs
+test
+*.tsbuildinfo
+*.log
+.DS_Store

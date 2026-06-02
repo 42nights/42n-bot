@@ -1,6 +1,3 @@
-import { runMigrations } from "../src/db/migrate";
-import { PATHS } from "../src/db";
-
-runMigrations();
+// Schema is managed by Convex (convex/schema.ts) — this script is a no-op.
 // eslint-disable-next-line no-console
-console.log(`Migrated ${PATHS.DB_PATH}`);
+console.log("Schema is managed by Convex. Run: npx convex deploy --yes");

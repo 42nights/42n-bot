@@ -5,6 +5,7 @@ import { Newsreader } from "next/font/google";
 import { Toaster } from "sonner";
 import { Shell } from "@/components/Shell";
 import { CommandPalette } from "@/components/CommandPalette";
+import { tenant } from "@/lib/tenant";
 import "./globals.css";
 
 const newsreader = Newsreader({
@@ -15,9 +16,9 @@ const newsreader = Newsreader({
 });
 
 export const metadata: Metadata = {
-  title: "Otis — AI engineer at 42nights",
+  title: `${tenant.displayName} — AI engineer at 42nights`,
   description:
-    "Otis reads issues. Writes PRs. Asks before doing anything risky.",
+    `${tenant.displayName} reads issues. Writes PRs. Asks before doing anything risky.`,
 };
 
 export default function RootLayout({
@@ -39,6 +40,14 @@ export default function RootLayout({
         } as React.CSSProperties
       }
     >
+      <head>
+        {tenant.logoUrl && (
+          <link rel="icon" href={tenant.logoUrl} />
+        )}
+        {tenant.primaryColor && (
+          <style>{`:root { --tenant-primary: ${tenant.primaryColor}; } .dark { --tenant-primary: ${tenant.primaryColor}; }`}</style>
+        )}
+      </head>
       <body className="min-h-screen antialiased bg-[var(--bg)] text-[var(--fg)]">
         <Shell>{children}</Shell>
         <Toaster position="top-right" theme="dark" />

@@ -14,7 +14,7 @@
     --border: oklch(88% 0.005 60);
     --border-strong: oklch(78% 0.006 60);
 
-    --accent: oklch(58% 0.16 145);
+    --accent: var(--tenant-primary, oklch(58% 0.16 145));
     --accent-fg: oklch(98% 0.005 145);
     --accent-soft: oklch(94% 0.05 145);
 
@@ -42,7 +42,7 @@
     --border: oklch(24% 0.005 60);
     --border-strong: oklch(34% 0.006 60);
 
-    --accent: oklch(74% 0.18 145);
+    --accent: var(--tenant-primary, oklch(74% 0.18 145));
     --accent-fg: oklch(14% 0.01 145);
     --accent-soft: oklch(28% 0.06 145);
 

@@ -1,39 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureSchema } from "@/src/db/migrate";
 import { activeRepos } from "@/src/repo-store";
 import { listLabeledIssues, type IssueSummary } from "@/src/github/client";
 import { botConfig } from "@/bot.config";
-import { db } from "@/src/db";
+import { getRunsByRepoAndIssues } from "@/src/db/ops/runs";
 import { log } from "@/src/shared/logger";
 
 export const runtime = "nodejs";
 
 type IssueRow = IssueSummary & {
-  repo: string;          // "owner/name"
+  repo: string;
   owner: string;
   name: string;
   source: "bot-found" | "bot-please" | "both";
-  severity: "low" | "medium" | "high" | null;  // parsed from body
-  type: string | null;                          // parsed from body
-  // Local run state, joined in:
-  run_id: number | null;
+  severity: "low" | "medium" | "high" | null;
+  type: string | null;
+  run_id: string | null;
   run_status: string | null;
   pr_number: number | null;
   pr_url: string | null;
 };
 
-/**
- * Live issue grid: bot-found + bot-please issues across every connected repo,
- * joined to local run state so the UI knows which ones already have a PR open
- * or are mid-flight. Polled by the dashboard.
- */
 export async function GET(req: NextRequest) {
-  ensureSchema();
-
   const url = new URL(req.url);
-  const repoFilter = url.searchParams.get("repo"); // "owner/name" | null
+  const repoFilter = url.searchParams.get("repo");
 
-  let repos = activeRepos().filter((r) => r.enabled);
+  let repos = (await activeRepos()).filter((r) => r.enabled);
   if (repoFilter) {
     repos = repos.filter((r) => `${r.owner}/${r.name}` === repoFilter);
   }
@@ -43,21 +34,11 @@ export async function GET(req: NextRequest) {
 
   const out: IssueRow[] = [];
 
-  // Two parallel labeled queries per repo, then merge by issue number so
-  // dual-labeled issues collapse to one row tagged source="both".
   for (const repo of repos) {
     try {
       const [found, requested] = await Promise.all([
-        listLabeledIssues({
-          owner: repo.owner,
-          repo: repo.name,
-          label: botConfig.labels.botFound,
-        }),
-        listLabeledIssues({
-          owner: repo.owner,
-          repo: repo.name,
-          label: botConfig.labels.request,
-        }),
+        listLabeledIssues({ owner: repo.owner, repo: repo.name, label: botConfig.labels.botFound }),
+        listLabeledIssues({ owner: repo.owner, repo: repo.name, label: botConfig.labels.request }),
       ]);
 
       const byNum = new Map<number, IssueRow>();
@@ -98,46 +79,28 @@ export async function GET(req: NextRequest) {
         }
       }
 
-      // Annotate with the most recent run per (repo, issue) so the UI can
-      // show "Fix in progress" / "PR opened #42" / etc.
-      // Single batch query instead of N per-issue queries.
       const rows = Array.from(byNum.values());
       if (rows.length > 0) {
-        const placeholders = rows.map(() => "?").join(",");
         const issueNumbers = rows.map((r) => r.number);
-        const runRows = db
-          .prepare(
-            `SELECT id, status, pr_number, pr_url, issue_number, started_at FROM runs
-               WHERE repo=? AND issue_number IN (${placeholders})
-               ORDER BY started_at DESC`,
-          )
-          .all(repoFull, ...issueNumbers) as Array<{
-            id: number;
-            status: string;
-            pr_number: number | null;
-            pr_url: string | null;
-            issue_number: number;
-            started_at: number;
-          }>;
-        // Keep only the latest run per issue_number (first seen = highest started_at due to DESC sort).
+        const runRows = await getRunsByRepoAndIssues(repoFull, issueNumbers);
         const latestRunByIssue = new Map<
           number,
-          { id: number; status: string; pr_number: number | null; pr_url: string | null }
+          { _id: string; status: string; pr_number: number | null; pr_url: string | null }
         >();
         for (const run of runRows) {
-          if (!latestRunByIssue.has(run.issue_number)) {
+          if (run.issue_number !== undefined && !latestRunByIssue.has(run.issue_number)) {
             latestRunByIssue.set(run.issue_number, {
-              id: run.id,
+              _id: run._id,
               status: run.status,
-              pr_number: run.pr_number,
-              pr_url: run.pr_url,
+              pr_number: run.pr_number ?? null,
+              pr_url: run.pr_url ?? null,
             });
           }
         }
         for (const r of rows) {
           const run = latestRunByIssue.get(r.number);
           if (run) {
-            r.run_id = run.id;
+            r.run_id = run._id;
             r.run_status = run.status;
             r.pr_number = run.pr_number;
             r.pr_url = run.pr_url;
@@ -151,7 +114,6 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Sort: in-flight first, then highest severity, then newest.
   const severityWeight = { high: 3, medium: 2, low: 1 } as const;
   out.sort((a, b) => {
     const aActive = isActiveStatus(a.run_status) ? 1 : 0;
@@ -166,13 +128,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ issues: out, repos: repos.length });
 }
 
-const ACTIVE = new Set([
-  "queued",
-  "planning",
-  "implementing",
-  "verifying",
-  "iterating",
-]);
+const ACTIVE = new Set(["queued", "planning", "implementing", "verifying", "iterating"]);
 function isActiveStatus(s: string | null): boolean {
   return !!s && ACTIVE.has(s);
 }

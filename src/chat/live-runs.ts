@@ -1,15 +1,8 @@
-import { db } from "../db";
-
-const ACTIVE_STATUSES = [
-  "queued",
-  "planning",
-  "implementing",
-  "verifying",
-  "iterating",
-];
+import { getActiveRuns } from "../db/ops/runs";
+import { listEventsByRunAfterCursor } from "../db/ops/events";
 
 export type LiveRunBrief = {
-  id: number;
+  id: string;
   type: string;
   repo: string;
   issue_number: number | null;
@@ -20,47 +13,32 @@ export type LiveRunBrief = {
   recent_events: Array<{ kind: string; payload: string; ts: number }>;
 };
 
-/**
- * Snapshot of every run currently in-flight, with the last ~5 events for each.
- * The chat layer prepends this to the LLM context so questions like
- * "what is the bot doing right now" can be answered even though the corpus
- * only indexes terminal runs.
- */
-export function liveRuns(): LiveRunBrief[] {
-  const runs = db
-    .prepare(
-      `SELECT id, type, repo, issue_number, issue_title, status, started_at, cost_usd
-         FROM runs
-         WHERE status IN (${ACTIVE_STATUSES.map(() => "?").join(",")})
-         ORDER BY started_at DESC
-         LIMIT 20`,
-    )
-    .all(...ACTIVE_STATUSES) as Omit<LiveRunBrief, "recent_events">[];
+export async function liveRuns(): Promise<LiveRunBrief[]> {
+  const runs = await getActiveRuns();
 
-  return runs.map((r) => {
-    const events = db
-      .prepare(
-        `SELECT kind, payload_json, ts FROM events
-           WHERE run_id = ?
-           ORDER BY ts DESC
-           LIMIT 6`,
-      )
-      .all(r.id) as Array<{ kind: string; payload_json: string; ts: number }>;
-    return {
-      ...r,
-      recent_events: events
-        .reverse()
-        .map((e) => ({ kind: e.kind, payload: e.payload_json, ts: e.ts })),
-    };
-  });
+  return Promise.all(
+    runs.map(async (r) => {
+      const events = await listEventsByRunAfterCursor(r._id);
+      const recent = events
+        .slice(-6)
+        .map((e) => ({ kind: e.kind, payload: e.payload_json, ts: e.ts }));
+      return {
+        id: r._id,
+        type: r.type,
+        repo: r.repo,
+        issue_number: r.issue_number ?? null,
+        issue_title: r.issue_title ?? null,
+        status: r.status,
+        started_at: r.started_at,
+        cost_usd: r.cost_usd,
+        recent_events: recent,
+      };
+    }),
+  );
 }
 
-/**
- * Render the live snapshot as a markdown chunk to inject into the chat
- * prompt. Empty string when nothing is running, so we don't waste tokens.
- */
-export function renderLiveRunsContext(): string {
-  const runs = liveRuns();
+export async function renderLiveRunsContext(): Promise<string> {
+  const runs = await liveRuns();
   if (!runs.length) return "";
   const lines: string[] = ["<live_runs>"];
   for (const r of runs) {

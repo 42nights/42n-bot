@@ -1,15 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureSchema } from "@/src/db/migrate";
-import { db } from "@/src/db";
 import { answerChat } from "@/src/chat/answer";
+import {
+  createChatThread,
+  getChatThread,
+  touchChatThread,
+  insertChatMessage,
+} from "@/src/db/ops/chat";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
-  ensureSchema();
   const body = (await req.json().catch(() => ({}))) as {
-    threadId?: number | null;
+    threadId?: string | null;
     message?: string;
   };
   const message = (body.message ?? "").trim();
@@ -22,39 +25,25 @@ export async function POST(req: NextRequest) {
 
   let threadId = body.threadId ?? null;
   if (!threadId) {
-    const info = db
-      .prepare(
-        `INSERT INTO chat_threads (title, created_at, updated_at) VALUES (?, ?, ?)`,
-      )
-      .run(message.slice(0, 80), Date.now(), Date.now());
-    threadId = Number(info.lastInsertRowid);
+    threadId = await createChatThread(message.slice(0, 80));
   } else {
-    const t = db
-      .prepare(`SELECT id FROM chat_threads WHERE id = ?`)
-      .get(threadId);
+    const t = await getChatThread(threadId);
     if (!t) {
       return NextResponse.json({ error: "thread not found" }, { status: 404 });
     }
-    db.prepare(`UPDATE chat_threads SET updated_at=? WHERE id=?`).run(
-      Date.now(),
-      threadId,
-    );
+    await touchChatThread(threadId);
   }
 
-  db.prepare(
-    `INSERT INTO chat_messages (thread_id, role, content, created_at) VALUES (?, 'user', ?, ?)`,
-  ).run(threadId, message, Date.now());
+  await insertChatMessage({ thread_id: threadId, role: "user", content: message });
 
   const result = await answerChat(message);
 
-  db.prepare(
-    `INSERT INTO chat_messages (thread_id, role, content, citations_json, created_at) VALUES (?, 'assistant', ?, ?, ?)`,
-  ).run(
-    threadId,
-    result.answer,
-    JSON.stringify(result.citations),
-    Date.now(),
-  );
+  await insertChatMessage({
+    thread_id: threadId,
+    role: "assistant",
+    content: result.answer,
+    citations_json: JSON.stringify(result.citations),
+  });
 
   return NextResponse.json({
     threadId,

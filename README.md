@@ -285,6 +285,68 @@ verified end-to-end against a live server.
 - **MCP servers.** Each subprocess runs with a tightly-scoped allow-list; no auto-discovery of project-specific tools.
 - **Token-by-token chat streaming.** SSE is wired for run events; chat responses come back as a single payload. ~1-hour swap when needed.
 
+## Deploy as a Castle template
+
+Otis ships as a Castle template — Castle handles provisioning, env injection, and health monitoring; you get a per-customer instance with a single click.
+
+### Tenant env contract
+
+Castle pre-fills the following vars at provision time. Local dev needs none of them (every var is optional; defaults to the Otis brand):
+
+| Variable | Purpose |
+|---|---|
+| `OTIS_TENANT_SLUG` | Unique slug for this customer. Presence activates tenant mode. |
+| `OTIS_TENANT_DISPLAY_NAME` | Brand name in page title / UI chrome. |
+| `OTIS_TENANT_PUBLIC_URL` | Canonical HTTPS URL for the deployment. |
+| `CASTLE_DEPLOYMENT_ID` | Castle deployment ID for the event backlink. |
+| `CASTLE_API_URL` | Castle API base (e.g. `https://api.castle.dev`). |
+| `CASTLE_WEBHOOK_SECRET` | Shared secret for `x-castle-secret` header. |
+| `OTIS_LOGO_URL` | Favicon/logo URL injected as `<link rel="icon">`. |
+| `OTIS_PRIMARY_COLOR` | CSS accent color (e.g. `oklch(65% 0.18 240)`). Falls back to default green. |
+
+Full table including optional Otis vars: [`docs/template-handoff.md`](docs/template-handoff.md).
+
+### Pattern A topology — Railway service per customer
+
+Vercel cannot host the coordinator: the coordinator is a persistent long-running process with writable disk (git worktrees at `WORKTREE_ROOT`). Serverless runtimes kill processes between requests and provide no writable filesystem.
+
+The recommended topology is **one Railway service per customer** containing both the Next.js dashboard and the coordinator (`npm run go`). Castle provisions a new Railway service for each deploy, injects the tenant env vars, and exposes the service URL as `OTIS_TENANT_PUBLIC_URL`.
+
+```
+Castle provisioning
+  └─ Railway service (per customer)
+       ├─ Next.js dashboard (:3000)
+       └─ coordinator (node dist/src/coordinator/index.js)
+            └─ Claude Code subprocess (per issue)
+```
+
+SQLite (`data/bot.db`) lives on the Railway volume. No separate DB service needed.
+
+### GitHub App install via Castle redirect
+
+The standard flow works unchanged in tenant mode:
+1. Customer opens their live URL.
+2. Clicks **Create GitHub App** — this serves a GitHub manifest form pre-filled with the right scopes.
+3. GitHub redirects back to `/api/github/app/setup-callback` on the tenant's domain.
+4. The callback stores credentials in the local `app_credentials` table.
+
+Castle can optionally pre-populate `GITHUB_WEBHOOK_SECRET` and configure the App webhook URL to point at `/api/github/webhook` for sub-60-second issue pickup.
+
+### Castle event backlink
+
+`src/castle/events.ts` emits four event kinds to `${CASTLE_API_URL}/deployments/${CASTLE_DEPLOYMENT_ID}/events`:
+
+- `session_started` — when Otis claims an issue
+- `pr_opened` — when a PR is pushed (with `outcome: "passing" | "needs_review"`)
+- `verification_failed` — on hard verification failures before the run ends
+- `session_ended` — on every terminal outcome (succeeded / failed / canceled)
+
+A heartbeat POSTs every 60 seconds when Castle env is present. All calls are fail-quiet — a Castle outage never blocks Otis.
+
+See [`docs/template-handoff.md`](docs/template-handoff.md) for the first-60-seconds guide, failure mode runbook, and the Anthropic cost-attribution note.
+
+---
+
 ## Caveats
 
 - **Local-first, not multi-tenant.** One coordinator daemon per `bot.db`. Multi-repo within a single daemon works; multi-org needs separate deployments.

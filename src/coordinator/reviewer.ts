@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { db } from "../db";
 import { botConfig } from "../../bot.config";
 import { runStructuredPlan } from "../claude/runner";
 import { REVIEW_JSON_SCHEMA, REVIEW_PROMPT } from "../claude/prompts";
@@ -11,6 +10,7 @@ import {
 import { isDuplicate } from "../github/issue-dedupe";
 import { emitEvent } from "../shared/events";
 import { log } from "../shared/logger";
+import { createRun, patchRun, incrementRunCost } from "../db/ops/runs";
 
 const ReviewSchema = z.object({
   candidates: z
@@ -42,23 +42,17 @@ export type ReviewerInput = {
   repo: string;
 };
 
-// QA5 (R5 finding 1): per-repo in-process lock. The reviewer reads the full
-// open-issue set, then dedups candidates against it, then files. If two
-// reviewer runs on the SAME repo overlap (coordinator interval/dispatch + a
-// cron-fired reviewer, all in the coordinator process), both read the same
-// list before either files → duplicate issues. This serializes them. A
-// second concurrent call on the same repo returns a no-op result.
 const reviewerInFlight = new Set<string>();
 
 export async function runReviewer(input: ReviewerInput): Promise<{
-  runId: number;
+  runId: string;
   proposed: number;
   opened: number;
   deduped: number;
 }> {
   const repoKey = `${input.owner}/${input.repo}`;
   if (reviewerInFlight.has(repoKey)) {
-    return { runId: -1, proposed: 0, opened: 0, deduped: 0 };
+    return { runId: "", proposed: 0, opened: 0, deduped: 0 };
   }
   reviewerInFlight.add(repoKey);
   try {
@@ -69,17 +63,17 @@ export async function runReviewer(input: ReviewerInput): Promise<{
 }
 
 async function runReviewerInner(input: ReviewerInput): Promise<{
-  runId: number;
+  runId: string;
   proposed: number;
   opened: number;
   deduped: number;
 }> {
-  const info = db
-    .prepare(
-      `INSERT INTO runs (type, repo, status, started_at) VALUES ('review', ?, 'planning', ?)`,
-    )
-    .run(`${input.owner}/${input.repo}`, Date.now());
-  const runId = Number(info.lastInsertRowid);
+  const runId = await createRun({
+    type: "review",
+    repo: `${input.owner}/${input.repo}`,
+    status: "planning",
+    started_at: Date.now(),
+  });
   emitEvent(runId, "review.started", { repo: `${input.owner}/${input.repo}` });
 
   const planRes = await runStructuredPlan({
@@ -96,9 +90,11 @@ async function runReviewerInner(input: ReviewerInput): Promise<{
       "reviewer",
       `${input.owner}/${input.repo}: planner failed: ${planRes.error.slice(0, 300)}`,
     );
-    db.prepare(
-      `UPDATE runs SET status='failed', finished_at=?, error_message=? WHERE id=?`,
-    ).run(Date.now(), planRes.error, runId);
+    await patchRun(runId, {
+      status: "failed",
+      finished_at: Date.now(),
+      error_message: planRes.error,
+    });
     return { runId, proposed: 0, opened: 0, deduped: 0 };
   }
   if (planRes.plan.candidates.length === 0) {
@@ -108,10 +104,7 @@ async function runReviewerInner(input: ReviewerInput): Promise<{
     );
   }
 
-  db.prepare(`UPDATE runs SET cost_usd = cost_usd + ? WHERE id = ?`).run(
-    planRes.costUsd,
-    runId,
-  );
+  await incrementRunCost(runId, planRes.costUsd);
 
   const existing = await listAllOpenIssues({
     owner: input.owner,
@@ -169,17 +162,20 @@ async function runReviewerInner(input: ReviewerInput): Promise<{
       labels: [botConfig.labels.botFound],
     });
     opened += 1;
-    emitEvent(runId, "review.opened_issue", { number: created.number, url: created.url });
+    emitEvent(runId, "review.opened_issue", {
+      number: created.number,
+      url: created.url,
+    });
   }
 
-  db.prepare(
-    `UPDATE runs SET status='succeeded', finished_at=? WHERE id=?`,
-  ).run(Date.now(), runId);
+  await patchRun(runId, { status: "succeeded", finished_at: Date.now() });
 
   return { runId, proposed: candidates.length, opened, deduped };
 }
 
-function renderReviewIssueBody(c: z.infer<typeof ReviewSchema>["candidates"][number]): string {
+function renderReviewIssueBody(
+  c: z.infer<typeof ReviewSchema>["candidates"][number],
+): string {
   const lines = c.lines?.length ? `\n**Lines:** ${c.lines.join(", ")}` : "";
   return `**Type:** ${c.type}
 **Severity:** ${c.severity}

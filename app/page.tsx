@@ -10,6 +10,7 @@ import { fetcher } from "@/lib/api-client";
 import { translate, type EventRow, type TranslateContext } from "@/lib/narration";
 import { formatUsd } from "@/lib/utils";
 import { useRepoScope } from "@/lib/repo-scope";
+import { tenant } from "@/lib/tenant";
 import { LiveDot } from "@/components/icons/LiveDot";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { ArrowRight, Send } from "lucide-react";
@@ -399,6 +400,18 @@ function Home() {
           <Sparkline runs={runs} />
         </div>
       </motion.section>
+
+      <p className="mt-8 text-center text-[11px] text-[var(--fg-subtle)]">
+        Built on{" "}
+        <a
+          href={tenant.publicUrl ?? "https://42nights.dev"}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline underline-offset-2 hover:text-[var(--fg-muted)] transition-colors"
+        >
+          42nights
+        </a>
+      </p>
     </div>
   );
 }

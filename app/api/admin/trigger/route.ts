@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureSchema } from "@/src/db/migrate";
 import { runImplementer } from "@/src/coordinator/implementer";
 import { runReviewer } from "@/src/coordinator/reviewer";
 import { botConfig } from "@/bot.config";
@@ -8,7 +7,6 @@ export const runtime = "nodejs";
 export const maxDuration = 600;
 
 export async function POST(req: NextRequest) {
-  ensureSchema();
   const body = (await req.json().catch(() => ({}))) as {
     kind?: "implementer" | "reviewer";
     owner?: string;
@@ -20,10 +18,7 @@ export async function POST(req: NextRequest) {
   const kind = body.kind ?? "reviewer";
   const repoDir = process.env.REPO_DIR;
   if (!repoDir) {
-    return NextResponse.json(
-      { error: "REPO_DIR not set" },
-      { status: 400 },
-    );
+    return NextResponse.json({ error: "REPO_DIR not set" }, { status: 400 });
   }
   const cfg =
     botConfig.repos.find(

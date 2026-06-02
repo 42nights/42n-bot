@@ -1,36 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomBytes } from "node:crypto";
-import { ensureSchema } from "@/src/db/migrate";
-import { db } from "@/src/db";
+import { insertSetupState } from "@/src/github/app";
 
 export const runtime = "nodejs";
 
-/**
- * GitHub App Manifest flow — step 1.
- *
- * Returns a self-submitting HTML form that POSTs to
- * https://github.com/settings/apps/new?state=<csrf>
- * with our manifest. The user sees the GitHub "Create GitHub App" confirmation
- * page (everything pre-filled), clicks once, and GitHub redirects them to our
- * setup-callback with a ?code= we can exchange.
- *
- * Docs: https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest
- */
 export async function GET(req: NextRequest) {
-  ensureSchema();
-
   const origin = originFor(req);
   const state = randomBytes(16).toString("hex");
-  db.prepare(
-    `INSERT INTO app_setup_state (state, created_at) VALUES (?, ?)`,
-  ).run(state, Date.now());
+  await insertSetupState(state);
 
-  // Note: we intentionally omit `hook_attributes` and `default_events`.
-  // GitHub rejects manifests with localhost webhook URLs (the URL has to be
-  // publicly reachable, even if `active: false`). We don't use webhooks for
-  // the local-dev flow — the coordinator polls every 60s instead. The user
-  // can add a webhook URL later from the App's Settings page if they want
-  // sub-minute reaction time (typically via ngrok or a public deploy).
   const manifest = {
     name: "42n-bot",
     url: origin,

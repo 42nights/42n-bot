@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureSchema } from "@/src/db/migrate";
-import { db } from "@/src/db";
+import { getRun, patchRun } from "@/src/db/ops/runs";
 
 export const runtime = "nodejs";
 
@@ -8,14 +7,10 @@ export async function POST(
   _req: NextRequest,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  ensureSchema();
   const { id } = await ctx.params;
-  const n = Number(id);
-  if (!Number.isFinite(n))
-    return NextResponse.json({ error: "bad id" }, { status: 400 });
-  const run = db.prepare(`SELECT * FROM runs WHERE id = ?`).get(n) as
-    | { status: string }
-    | undefined;
+  if (!id) return NextResponse.json({ error: "bad id" }, { status: 400 });
+
+  const run = await getRun(id);
   if (!run) return NextResponse.json({ error: "not found" }, { status: 404 });
   if (
     ["pr-opened", "succeeded", "needs-review", "failed", "abandoned"].includes(
@@ -27,8 +22,10 @@ export async function POST(
       { status: 409 },
     );
   }
-  db.prepare(
-    `UPDATE runs SET status='abandoned', error_message='cancelled via dashboard', finished_at=? WHERE id=?`,
-  ).run(Date.now(), n);
+  await patchRun(id, {
+    status: "abandoned",
+    error_message: "cancelled via dashboard",
+    finished_at: Date.now(),
+  });
   return NextResponse.json({ ok: true });
 }

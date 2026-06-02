@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
-import { ensureSchema } from "@/src/db/migrate";
-import { db } from "@/src/db";
+import { getRun } from "@/src/db/ops/runs";
+import { listEventsByRunAfterCursor } from "@/src/db/ops/events";
 
 export const runtime = "nodejs";
 
@@ -16,31 +16,13 @@ export async function GET(
   req: NextRequest,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  ensureSchema();
   const { id } = await ctx.params;
-  const runId = Number(id);
-  if (!Number.isFinite(runId)) {
-    return new Response("bad id", { status: 400 });
-  }
+  if (!id) return new Response("bad id", { status: 400 });
 
-  // QA3 (R3 finding 21): 404 immediately for a non-existent run instead of
-  // opening a stream that polls an empty table forever while the client
-  // reconnects every 2s. The run row is always created before its events,
-  // so a missing row means a bad URL.
-  const exists = db
-    .prepare(`SELECT 1 FROM runs WHERE id = ?`)
-    .get(runId) as { 1: number } | undefined;
-  if (!exists) {
-    return new Response("run not found", { status: 404 });
-  }
+  const run = await getRun(id);
+  if (!run) return new Response("run not found", { status: 404 });
 
   const encoder = new TextEncoder();
-
-  // QA2: hoist the timers so EVERY teardown path (terminal status, client
-  // abort, enqueue failure on a dead pipe, and ReadableStream.cancel) clears
-  // them. Previously a client that dropped without an abort signal left both
-  // intervals running forever — a per-connection leak that compounds under
-  // load (e.g. many browser tabs, flaky proxies).
   let timer: ReturnType<typeof setInterval> | null = null;
   let heartbeat: ReturnType<typeof setInterval> | null = null;
   let closed = false;
@@ -60,68 +42,55 @@ export async function GET(
         try {
           controller.enqueue(encoder.encode(s));
         } catch {
-          // Broken pipe — stop the timers immediately rather than no-opping
-          // every 500ms forever.
           teardown();
         }
       };
       const send = (data: unknown) =>
         safeEnqueue(`data: ${JSON.stringify(data)}\n\n`);
 
-      const existing = db
-        .prepare(`SELECT * FROM events WHERE run_id=? ORDER BY id`)
-        .all(runId) as Array<{ id: number }>;
-      for (const e of existing) send(e);
-      let lastId = existing.at(-1)?.id ?? 0;
+      // Cursor: track the highest _creationTime seen so we only fetch new rows.
+      let lastCreationTime: number | undefined = undefined;
 
-      const tick = () => {
+      const tick = async () => {
         if (closed) return;
         try {
-          const fresh = db
-            .prepare(
-              `SELECT * FROM events WHERE run_id=? AND id > ? ORDER BY id`,
-            )
-            .all(runId, lastId) as Array<{ id: number }>;
+          const fresh = await listEventsByRunAfterCursor(id, lastCreationTime);
           for (const e of fresh) {
             send(e);
-            lastId = e.id;
+            lastCreationTime = Math.max(
+              lastCreationTime ?? 0,
+              e._creationTime,
+            );
           }
-          const run = db
-            .prepare(`SELECT status FROM runs WHERE id = ?`)
-            .get(runId) as { status?: string } | undefined;
-          // B12: close as soon as the run is terminal — no 500ms delay
-          // waiting for an empty next tick. We've already drained `fresh`
-          // above, so any final events landed in the same transaction as
-          // the terminal status flip are still sent.
-          if (run && TERMINAL.has(run.status ?? "")) {
+          const current = await getRun(id);
+          if (current && TERMINAL.has(current.status)) {
             safeEnqueue(`event: end\ndata: done\n\n`);
             teardown();
             try {
               controller.close();
-            } catch {/* already closed */}
+            } catch {
+              /* already closed */
+            }
           }
         } catch {
           /* per-tick errors are non-fatal */
         }
       };
 
-      timer = setInterval(tick, 500);
-
-      // B4: keepalive comment every 30s. Cloudflare, nginx, and friends close
-      // idle SSE streams around the ~100s mark; a 30s heartbeat is well under
-      // every reasonable proxy timeout.
+      // Send the initial batch immediately, then poll.
+      tick();
+      timer = setInterval(() => { tick().catch(() => {}); }, 500);
       heartbeat = setInterval(() => safeEnqueue(`: keepalive\n\n`), 30_000);
 
       req.signal.addEventListener("abort", () => {
         teardown();
         try {
           controller.close();
-        } catch {/* already closed */}
+        } catch {
+          /* already closed */
+        }
       });
     },
-    // QA2: ReadableStream.cancel fires when the consumer side is torn down
-    // (browser navigates away, fetch aborted) — a path the abort listener
-    // doesn't always cover. Clean up here too.
     cancel() {
       teardown();
     },

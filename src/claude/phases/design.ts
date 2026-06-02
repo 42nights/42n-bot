@@ -6,7 +6,7 @@ import { recordPhaseCost } from "./cost-tracker";
 import { DesignSchema, type Design, type Understanding } from "./types";
 
 export async function runDesign(opts: {
-  runId: number;
+  runId: string;
   issue: IssueForPrompt;
   understanding: Understanding;
   cwd: string;

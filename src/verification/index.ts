@@ -18,11 +18,11 @@ import { checkRuntime } from "./runtime/index";
 import type { IssueForPrompt } from "../claude/prompts";
 import type { Understanding, CriticV2Report } from "../claude/phases/types";
 import { emitEvent } from "../shared/events";
-import { db } from "../db";
+import { insertVerdict } from "../db/ops/verdicts";
 import { log } from "../shared/logger";
 
 export type RunVerificationArgs = {
-  runId: number;
+  runId: string;
   attempt: number;
   cwd: string;
   baseRef: string;
@@ -309,17 +309,13 @@ export async function runVerification(
     softFailures: softFailures.length,
   });
 
-  db.prepare(
-    `INSERT INTO verdicts (run_id, attempt, pass, checks_json, failure_summary, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(
-    args.runId,
-    args.attempt,
-    pass ? 1 : 0,
-    JSON.stringify(checks),
-    failureSummary,
-    Date.now(),
-  );
+  insertVerdict({
+    run_id: args.runId,
+    attempt: args.attempt,
+    pass: pass ? 1 : 0,
+    checks_json: JSON.stringify(checks),
+    failure_summary: failureSummary,
+  }).catch((err) => log.error("verification", `insertVerdict failed: ${err}`));
 
   return {
     pass,

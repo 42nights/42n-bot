@@ -1,6 +1,5 @@
 import { ImageResponse } from "next/og";
-import { db } from "@/src/db";
-import { ensureSchema } from "@/src/db/migrate";
+import { getRun } from "@/src/db/ops/runs";
 
 export const runtime = "nodejs";
 export const alt = "Otis session";
@@ -34,24 +33,18 @@ export default async function Image({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const n = Number(id);
 
   let title = `Session #${id}`;
   let status = "unknown";
 
-  if (Number.isFinite(n)) {
-    try {
-      ensureSchema();
-      const run = db.prepare(`SELECT issue_title, status FROM runs WHERE id = ?`).get(n) as
-        | { issue_title: string | null; status: string }
-        | undefined;
-      if (run) {
-        title = run.issue_title ?? title;
-        status = run.status;
-      }
-    } catch {
-      // DB unavailable at build time — use defaults
+  try {
+    const run = await getRun(id);
+    if (run) {
+      title = run.issue_title ?? title;
+      status = run.status;
     }
+  } catch {
+    // Convex unavailable — use defaults
   }
 
   const statusLabel = STATUS_LABEL[status] ?? status;

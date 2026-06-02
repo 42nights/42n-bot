@@ -8,6 +8,8 @@ const root = path.join(here, "..");
 const entries = [
   "src/coordinator/index.ts",
   "scripts/smoke-test.ts",
+  "src/swebench/harness.ts",
+  "src/swebench/grade-local.ts",
 ];
 
 const watch = process.argv.includes("--watch");

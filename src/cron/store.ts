@@ -1,37 +1,22 @@
 import { CronExpressionParser } from "cron-parser";
-import { db } from "../db";
+import {
+  listCrons as listCronsOp,
+  getCron as getCronOp,
+  createCronRow,
+  updateCronRow,
+  deleteCronRow,
+  getDueCrons,
+  claimDueCron as claimDueCronOp,
+  recordCronRunRow,
+  pruneCronRunRows,
+  listCronRunRows,
+  type CronRow,
+  type CronRunRow,
+} from "../db/ops/crons";
 
 export type CronAction = "reviewer" | "fix_issue" | "send_otis";
+export type { CronRow, CronRunRow };
 
-export type CronRow = {
-  id: number;
-  name: string;
-  schedule: string;
-  action: CronAction;
-  payload_json: string;
-  repo: string | null;
-  enabled: number;
-  last_run_at: number | null;
-  next_run_at: number | null;
-  created_at: number;
-  updated_at: number;
-};
-
-export type CronRunRow = {
-  id: number;
-  cron_id: number;
-  started_at: number;
-  finished_at: number | null;
-  ok: number;
-  message: string | null;
-  run_id: number | null;
-};
-
-/**
- * Compute the next fire time for a cron expression given a baseline (default
- * = now). Returns null if the expression is unparseable so callers can flag
- * the row as broken instead of crashing the scheduler loop.
- */
 export function nextFireAt(schedule: string, since = Date.now()): number | null {
   try {
     const it = CronExpressionParser.parse(schedule, { currentDate: new Date(since) });
@@ -54,24 +39,15 @@ export function validateSchedule(schedule: string): {
   }
 }
 
-export function listCrons(): CronRow[] {
-  return db
-    .prepare(`SELECT * FROM crons ORDER BY enabled DESC, next_run_at ASC`)
-    .all() as CronRow[];
+export async function listCrons(): Promise<CronRow[]> {
+  return listCronsOp();
 }
 
-export function getCron(id: number): CronRow | null {
-  return (
-    (db.prepare(`SELECT * FROM crons WHERE id = ?`).get(id) as CronRow) ?? null
-  );
+export async function getCron(id: string): Promise<CronRow | null> {
+  return getCronOp(id);
 }
 
-/**
- * QA3 (R3 finding 8): bound payloads so a 10MB body can't be persisted into
- * the payload_json TEXT column (resource exhaustion). Validates per-action
- * shape too — send_otis needs a sane title/body.
- */
-const MAX_PAYLOAD_BYTES = 16 * 1024; // 16KB — generous for an issue body
+const MAX_PAYLOAD_BYTES = 16 * 1024;
 const MAX_TITLE_LEN = 256;
 const MAX_BODY_LEN = 8 * 1024;
 
@@ -81,10 +57,7 @@ export function validatePayload(
 ): { ok: true } | { ok: false; error: string } {
   const size = JSON.stringify(payload).length;
   if (size > MAX_PAYLOAD_BYTES) {
-    return {
-      ok: false,
-      error: `payload too large (${size} bytes, max ${MAX_PAYLOAD_BYTES})`,
-    };
+    return { ok: false, error: `payload too large (${size} bytes, max ${MAX_PAYLOAD_BYTES})` };
   }
   if (action === "send_otis") {
     const title = payload.title;
@@ -107,42 +80,37 @@ export function validatePayload(
   return { ok: true };
 }
 
-export function createCron(args: {
+export async function createCron(args: {
   name: string;
   schedule: string;
   action: CronAction;
   payload: Record<string, unknown>;
   repo: string | null;
   enabled: boolean;
-}): CronRow {
+}): Promise<CronRow> {
   const v = validateSchedule(args.schedule);
-  if (!v.ok)
-    throw new Error(`Bad cron schedule "${args.schedule}": ${v.error}`);
+  if (!v.ok) throw new Error(`Bad cron schedule "${args.schedule}": ${v.error}`);
   const pv = validatePayload(args.action, args.payload);
   if (!pv.ok) throw new Error(pv.error);
   const now = Date.now();
-  const info = db
-    .prepare(
-      `INSERT INTO crons (name, schedule, action, payload_json, repo, enabled,
-                          next_run_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      args.name,
-      args.schedule,
-      args.action,
-      JSON.stringify(args.payload),
-      args.repo,
-      args.enabled ? 1 : 0,
-      v.nextRun ?? null,
-      now,
-      now,
-    );
-  return getCron(Number(info.lastInsertRowid))!;
+  const id = await createCronRow({
+    name: args.name,
+    schedule: args.schedule,
+    action: args.action,
+    payload_json: JSON.stringify(args.payload),
+    repo: args.repo,
+    enabled: args.enabled ? 1 : 0,
+    next_run_at: v.nextRun ?? undefined,
+    created_at: now,
+    updated_at: now,
+  });
+  const row = await getCronOp(id);
+  if (!row) throw new Error("cron create failed");
+  return row;
 }
 
-export function updateCron(
-  id: number,
+export async function updateCron(
+  id: string,
   patch: Partial<{
     name: string;
     schedule: string;
@@ -151,24 +119,21 @@ export function updateCron(
     repo: string | null;
     enabled: boolean;
   }>,
-): CronRow | null {
-  const existing = getCron(id);
+): Promise<CronRow | null> {
+  const existing = await getCronOp(id);
   if (!existing) return null;
 
-  // Re-compute next_run_at whenever the schedule changes.
   let nextRunAt = existing.next_run_at;
   let schedule = existing.schedule;
   if (patch.schedule !== undefined && patch.schedule !== existing.schedule) {
     const v = validateSchedule(patch.schedule);
-    if (!v.ok)
-      throw new Error(`Bad cron schedule "${patch.schedule}": ${v.error}`);
+    if (!v.ok) throw new Error(`Bad cron schedule "${patch.schedule}": ${v.error}`);
     schedule = patch.schedule;
-    nextRunAt = v.nextRun ?? null;
+    nextRunAt = v.nextRun ?? undefined;
   }
 
-  // QA3: validate the payload when either the payload or the action changes.
   if (patch.payload !== undefined || patch.action !== undefined) {
-    const effectiveAction = patch.action ?? existing.action;
+    const effectiveAction = (patch.action ?? existing.action) as CronAction;
     const effectivePayload =
       patch.payload ??
       (JSON.parse(existing.payload_json) as Record<string, unknown>);
@@ -176,116 +141,57 @@ export function updateCron(
     if (!pv.ok) throw new Error(pv.error);
   }
 
-  db.prepare(
-    `UPDATE crons SET
-       name = COALESCE(?, name),
-       schedule = ?,
-       action = COALESCE(?, action),
-       payload_json = COALESCE(?, payload_json),
-       repo = COALESCE(?, repo),
-       enabled = COALESCE(?, enabled),
-       next_run_at = ?,
-       updated_at = ?
-     WHERE id = ?`,
-  ).run(
-    patch.name ?? null,
+  const dbPatch: Record<string, unknown> = {
     schedule,
-    patch.action ?? null,
-    patch.payload ? JSON.stringify(patch.payload) : null,
-    patch.repo !== undefined ? patch.repo : null,
-    patch.enabled !== undefined ? (patch.enabled ? 1 : 0) : null,
-    nextRunAt,
-    Date.now(),
-    id,
-  );
-  return getCron(id);
+    next_run_at: nextRunAt,
+    updated_at: Date.now(),
+  };
+  if (patch.name !== undefined) dbPatch.name = patch.name;
+  if (patch.action !== undefined) dbPatch.action = patch.action;
+  if (patch.payload !== undefined) dbPatch.payload_json = JSON.stringify(patch.payload);
+  if (patch.repo !== undefined) dbPatch.repo = patch.repo;
+  if (patch.enabled !== undefined) dbPatch.enabled = patch.enabled ? 1 : 0;
+
+  return updateCronRow(id, dbPatch);
 }
 
-export function deleteCron(id: number): boolean {
-  const r = db.prepare(`DELETE FROM crons WHERE id = ?`).run(id);
-  return r.changes > 0;
+export async function deleteCron(id: string): Promise<boolean> {
+  return deleteCronRow(id);
 }
 
-/**
- * Crons that are due to fire (enabled + next_run_at <= now). Returns up to
- * `limit` so a giant backlog doesn't block the tick.
- */
-export function dueCrons(limit = 10): CronRow[] {
-  return db
-    .prepare(
-      `SELECT * FROM crons
-         WHERE enabled = 1
-           AND next_run_at IS NOT NULL
-           AND next_run_at <= ?
-         ORDER BY next_run_at ASC
-         LIMIT ?`,
-    )
-    .all(Date.now(), limit) as CronRow[];
+export async function dueCrons(limit = 10): Promise<CronRow[]> {
+  return getDueCrons(Date.now(), limit);
 }
 
-/**
- * QA3 (R3 finding 6): atomically CLAIM a due cron for firing, cross-process.
- *
- * The dashboard (Next.js) and the coordinator (daemon) are separate processes
- * that both tick the scheduler. An in-memory `ticking` guard can't coordinate
- * across processes, so both could see the same cron as due and fire it twice
- * (two reviewer subprocesses, two duplicate issues, etc).
- *
- * This advances `next_run_at` in a single conditional UPDATE keyed on the
- * exact value the caller read. Only ONE process's UPDATE will match (the
- * others find next_run_at already moved). `changes > 0` means "you won the
- * claim — fire it." The schedule is advanced as part of the claim, so the
- * history row is recorded separately by `recordCronRun`.
- */
-export function claimDueCron(cron: CronRow): boolean {
+export async function claimDueCron(cron: CronRow): Promise<boolean> {
   const now = Date.now();
   const next = nextFireAt(cron.schedule, now);
-  const res = db
-    .prepare(
-      `UPDATE crons SET next_run_at = ?, last_run_at = ?, updated_at = ?
-         WHERE id = ? AND next_run_at = ?`,
-    )
-    .run(next, now, now, cron.id, cron.next_run_at);
-  return res.changes > 0;
+  return claimDueCronOp(cron._id, cron.next_run_at, next ?? undefined, now);
 }
 
-/** Record a cron-fire result in history. Separate from the claim (above). */
-export function recordCronRun(
-  cronId: number,
-  result: { ok: boolean; message: string; runId?: number },
-): void {
-  const now = Date.now();
-  try {
-    db.prepare(
-      `INSERT INTO cron_runs (cron_id, started_at, finished_at, ok, message, run_id)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(cronId, now, now, result.ok ? 1 : 0, result.message, result.runId ?? null);
-  } catch (err) {
-    // Cron deleted between claim and history insert → FK violation. Skip.
+export async function recordCronRun(
+  cronId: string,
+  result: { ok: boolean; message: string; runId?: string },
+): Promise<void> {
+  await recordCronRunRow({
+    cron_id: cronId,
+    ok: result.ok,
+    message: result.message,
+    run_id: result.runId,
+  }).catch((err) => {
     const msg = err instanceof Error ? err.message : String(err);
-    if (!/FOREIGN KEY/i.test(msg)) throw err;
-  }
+    if (!/FOREIGN KEY|not found/i.test(msg)) throw err;
+  });
 }
 
-/**
- * QA3 (R3 finding 7): prune cron_runs older than the retention window so a
- * high-frequency cron (one firing every 5 minutes is ~8.6k rows/month) can't
- * grow the DB unbounded. Called from the coordinator's 6h reaper.
- */
-export function pruneCronRuns(retentionDays = 90): number {
+export async function pruneCronRuns(retentionDays = 90): Promise<number> {
   const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
-  const res = db
-    .prepare(`DELETE FROM cron_runs WHERE started_at < ?`)
-    .run(cutoff);
-  return res.changes;
+  return pruneCronRunRows(cutoff);
 }
 
-export function listCronRuns(cronId: number, limit = 50): CronRunRow[] {
-  return db
-    .prepare(
-      `SELECT * FROM cron_runs
-         WHERE cron_id = ?
-         ORDER BY started_at DESC LIMIT ?`,
-    )
-    .all(cronId, limit) as CronRunRow[];
+export async function listCronRuns(
+  cronId: string,
+  limit = 50,
+): Promise<CronRunRow[]> {
+  return listCronRunRows(cronId, limit);
 }

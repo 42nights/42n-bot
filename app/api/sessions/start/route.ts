@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureSchema } from "@/src/db/migrate";
 import { addLabel, ghFor } from "@/src/github/client";
 import { activeRepos } from "@/src/repo-store";
 import { botConfig } from "@/bot.config";
@@ -8,14 +7,7 @@ import { log } from "@/src/shared/logger";
 
 export const runtime = "nodejs";
 
-/**
- * Creates a GitHub issue with the user's prompt as the body, labels it
- * `bot-please`, then kicks the coordinator. Returns the issue number.
- *
- * Body: { prompt: string; repo?: "owner/name" | null }
- */
 export async function POST(req: NextRequest) {
-  ensureSchema();
   const body = (await req.json().catch(() => ({}))) as {
     prompt?: string;
     repo?: string | null;
@@ -24,7 +16,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "prompt required" }, { status: 400 });
   }
 
-  // Resolve which repo to use: explicit arg > first enabled connected repo.
   let owner: string;
   let name: string;
 
@@ -38,7 +29,7 @@ export async function POST(req: NextRequest) {
     }
     [owner, name] = parts;
   } else {
-    const repos = activeRepos();
+    const repos = await activeRepos();
     if (repos.length === 0) {
       return NextResponse.json(
         { error: "No repos connected. Add one in Settings." },

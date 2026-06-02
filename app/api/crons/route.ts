@@ -1,18 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureSchema } from "@/src/db/migrate";
 import { createCron, listCrons, type CronAction } from "@/src/cron/store";
 
 export const runtime = "nodejs";
 
 export async function GET() {
-  ensureSchema();
-  return NextResponse.json({ crons: listCrons() });
+  return NextResponse.json({ crons: await listCrons() });
 }
 
 const ACTIONS: CronAction[] = ["reviewer", "fix_issue", "send_otis"];
 
 export async function POST(req: NextRequest) {
-  ensureSchema();
   const body = (await req.json().catch(() => ({}))) as {
     name?: string;
     schedule?: string;
@@ -34,7 +31,7 @@ export async function POST(req: NextRequest) {
     );
   }
   try {
-    const cron = createCron({
+    const cron = await createCron({
       name: body.name,
       schedule: body.schedule,
       action: body.action as CronAction,

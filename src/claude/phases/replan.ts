@@ -42,7 +42,7 @@ const REPLAN_JSON_SCHEMA = {
 };
 
 export async function runReplan(opts: {
-  runId: number;
+  runId: string;
   issue: IssueForPrompt;
   understanding: Understanding;
   originalPlan: unknown;

@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureSchema } from "@/src/db/migrate";
 import { botConfig } from "@/bot.config";
 import {
   connectRepo,
@@ -12,9 +11,8 @@ import { log } from "@/src/shared/logger";
 export const runtime = "nodejs";
 
 export async function GET() {
-  ensureSchema();
   return NextResponse.json({
-    connected: listConnectedRepos(),
+    connected: await listConnectedRepos(),
     labels: botConfig.labels,
     verification: {
       maxIterations: botConfig.verification.maxIterations,
@@ -30,7 +28,6 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  ensureSchema();
   if (!process.env.GITHUB_TOKEN) {
     return NextResponse.json(
       { error: "GITHUB_TOKEN is not set on the server" },
@@ -54,10 +51,9 @@ export async function POST(req: NextRequest) {
       name: body.name,
       repoDir: body.repoDir ?? null,
     });
-    // Best-effort background clone if no path was given.
     if (!body.repoDir) {
-      ensureLocalClone(repo.id).catch((err) =>
-        log.warn("clone", `bg clone of repo ${repo.id} failed: ${err}`),
+      ensureLocalClone(repo._id).catch((err) =>
+        log.warn("clone", `bg clone of repo ${repo._id} failed: ${err}`),
       );
     }
     return NextResponse.json({ ok: true, repo });

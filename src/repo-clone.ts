@@ -36,18 +36,11 @@ async function isGitRepo(p: string): Promise<boolean> {
 }
 
 async function tokenForInstallation(installationId: number): Promise<string> {
-  // Octokit's auth-app strategy mints + caches installation tokens internally.
-  // Pull the raw token so we can stuff it into a clone URL.
-  const octo = ghInstallation(installationId);
+  const octo = await ghInstallation(installationId);
   const auth = (await octo.auth({ type: "installation" })) as { token: string };
   return auth.token;
 }
 
-/**
- * GitHub login + repo-name character set. Validated before building any URL
- * so a row injection (or compromised webhook) can't redirect the clone to a
- * different host via "/" or "@" smuggling.
- */
 const GH_NAME_RE = /^[A-Za-z0-9_.-]{1,100}$/;
 
 export function isSafeGitHubName(s: string): boolean {
@@ -61,13 +54,12 @@ function cloneUrlFor(args: {
 }): string {
   if (!isSafeGitHubName(args.owner) || !isSafeGitHubName(args.name)) {
     throw new Error(
-      `Refused to construct clone URL: owner/name failed validation`,
+      "Refused to construct clone URL: owner/name failed validation",
     );
   }
   if (args.token) {
     return `https://x-access-token:${args.token}@github.com/${args.owner}/${args.name}.git`;
   }
-  // PAT fallback — same trick with the env token.
   const pat = process.env.GITHUB_TOKEN;
   if (pat) {
     return `https://x-access-token:${pat}@github.com/${args.owner}/${args.name}.git`;
@@ -75,20 +67,11 @@ function cloneUrlFor(args: {
   return `https://github.com/${args.owner}/${args.name}.git`;
 }
 
-/**
- * Ensure a connected repo has a local clone the coordinator can branch from.
- * Idempotent:
- *  - If `repo_dir` is set and contains a `.git`, fetch origin and return it.
- *  - Otherwise pick the default path (~/.42n-bot/repos/<owner>/<name>), clone
- *    using the installation token if available (else PAT), persist the path.
- */
-export async function ensureLocalClone(repoId: number): Promise<{
-  ok: true;
-  repoDir: string;
-  cloned: boolean;
-  fetched: boolean;
-} | { ok: false; error: string }> {
-  const repo = getConnectedRepo(repoId);
+export async function ensureLocalClone(repoId: string): Promise<
+  | { ok: true; repoDir: string; cloned: boolean; fetched: boolean }
+  | { ok: false; error: string }
+> {
+  const repo = await getConnectedRepo(repoId);
   if (!repo) return { ok: false, error: "repo not found" };
 
   const targetDir =
@@ -96,16 +79,13 @@ export async function ensureLocalClone(repoId: number): Promise<{
       ? repo.repo_dir
       : defaultCloneDir(repo.owner, repo.name);
 
-  // Already cloned: clean any stale lock files from a previous crash, then
-  // fetch. Without the lock sweep, a leftover `.git/config.lock` blocks
-  // every fetch forever and the repo gets stuck until a human deletes it.
   if (await isGitRepo(targetDir)) {
     try {
       await clearGitLocks(targetDir);
       const git = simpleGit(targetDir);
       await git.fetch("origin", repo.default_branch);
       if (!repo.repo_dir) {
-        updateConnectedRepo(repo.id, { repo_dir: targetDir });
+        await updateConnectedRepo(repo._id, { repo_dir: targetDir });
       }
       return { ok: true, repoDir: targetDir, cloned: false, fetched: true };
     } catch (err) {
@@ -114,8 +94,6 @@ export async function ensureLocalClone(repoId: number): Promise<{
     }
   }
 
-  // Block accidental clone into a non-empty non-git dir — protects the user
-  // from us writing into their unrelated checkout.
   if (await dirExists(targetDir)) {
     const entries = await fs.readdir(targetDir);
     if (entries.length > 0) {
@@ -129,14 +107,9 @@ export async function ensureLocalClone(repoId: number): Promise<{
   await fs.mkdir(path.dirname(targetDir), { recursive: true });
 
   let token: string | null = null;
-  if (appConfigured()) {
-    const installId = installationIdForRepo(repo.owner, repo.name);
+  if (await appConfigured()) {
+    const installId = await installationIdForRepo(repo.owner, repo.name);
     if (installId) {
-      // QA3 (R3 finding 18): for an App-bound repo, one retry then a HARD
-      // error. Silently falling back to the PAT here would clone with a
-      // token that may lack permissions on this repo — a confusing partial
-      // success. The PAT fallback below is only for repos with no
-      // installation (PAT-connected repos), not for App-bound ones.
       try {
         token = await tokenForInstallation(installId);
       } catch (err1) {
@@ -147,7 +120,7 @@ export async function ensureLocalClone(repoId: number): Promise<{
         } catch (err2) {
           return {
             ok: false,
-            error: `Could not mint an installation token for ${repo.owner}/${repo.name} (App-bound repo): ${err2 instanceof Error ? err2.message : String(err2)}`,
+            error: `Could not mint an installation token for ${repo.owner}/${repo.name}: ${err2 instanceof Error ? err2.message : String(err2)}`,
           };
         }
       }
@@ -158,34 +131,23 @@ export async function ensureLocalClone(repoId: number): Promise<{
   try {
     const git = simpleGit();
     await git.clone(url, targetDir, ["--branch", repo.default_branch]);
-    updateConnectedRepo(repo.id, { repo_dir: targetDir });
+    await updateConnectedRepo(repo._id, { repo_dir: targetDir });
     log.info("clone", `cloned ${repo.owner}/${repo.name} → ${targetDir}`);
     return { ok: true, repoDir: targetDir, cloned: true, fetched: false };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    // Scrub the token out of any error message before surfacing it.
     const scrubbed = token ? msg.replaceAll(token, "<token>") : msg;
     return { ok: false, error: `clone failed: ${scrubbed}` };
   }
 }
 
-/**
- * Mint a fresh, authenticated remote URL for pushing. The token embedded in
- * origin at clone time is a GitHub App installation token (ghs_…) that expires
- * after one hour — so by push time it's almost always stale and the push fails
- * with "Invalid username or token". (Fetch survives a stale token on a public
- * repo via anonymous read; push never does.) Mint a fresh one each push.
- *
- * Returns the token alongside the URL so the caller can scrub it from any error
- * message before logging.
- */
 export async function freshPushAuth(
   owner: string,
   name: string,
 ): Promise<{ url: string; token: string | null }> {
   let token: string | null = null;
-  if (appConfigured()) {
-    const installId = installationIdForRepo(owner, name);
+  if (await appConfigured()) {
+    const installId = await installationIdForRepo(owner, name);
     if (installId) {
       try {
         token = await tokenForInstallation(installId);
@@ -195,9 +157,6 @@ export async function freshPushAuth(
         try {
           token = await tokenForInstallation(installId);
         } catch (err2) {
-          // Both attempts failed. Fall back to PAT — push can still succeed
-          // on some setups (PAT with repo scope). Caller scrubs/handles a
-          // final push failure; do not hard-throw here.
           log.warn(
             "push-auth",
             `installation token mint failed twice, falling back to PAT: ${err2 instanceof Error ? err2.message : String(err2)}`,
@@ -216,5 +175,5 @@ export type CloneResult = Awaited<ReturnType<typeof ensureLocalClone>>;
 export async function ensureLocalCloneForRepo(
   repo: ConnectedRepo,
 ): Promise<CloneResult> {
-  return ensureLocalClone(repo.id);
+  return ensureLocalClone(repo._id);
 }
