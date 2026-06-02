@@ -366,3 +366,11 @@ export const pruneOldRuns = mutation({
     return stale.length;
   },
 });
+
+export const remove = mutation({
+  args: { id: v.id("runs") },
+  handler: async (ctx, { id }) => {
+    await ctx.db.delete(id);
+    return true;
+  },
+});

@@ -7,12 +7,25 @@ import { createRun } from "../src/db/ops/runs";
 import { insertEvent } from "../src/db/ops/events";
 import { insertVerdict } from "../src/db/ops/verdicts";
 import { insertArtifact } from "../src/db/ops/artifacts";
+import { upsertRepo } from "../src/db/ops/repos";
 
 const now = Date.now();
 const min = 60 * 1000;
 const hour = 60 * min;
 
 async function seed() {
+  // The repo the demo runs belong to, so the repos view isn't empty.
+  await upsertRepo({
+    owner: "demo-org",
+    name: "demo-repo",
+    default_branch: "main",
+    enabled: 1,
+    repo_url: "https://github.com/demo-org/demo-repo",
+    description: "Demo repository wired to Otis for issue→PR runs.",
+    created_at: now - 30 * 24 * hour,
+    updated_at: now - hour,
+  });
+
   // Seed a succeeded implement run.
   const runId1 = await createRun({
     type: "implement",
