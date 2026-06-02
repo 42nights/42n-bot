@@ -1,4 +1,4 @@
-import { pipeline, type FeatureExtractionPipeline } from "@huggingface/transformers";
+import type { FeatureExtractionPipeline } from "@huggingface/transformers";
 import { log } from "../shared/logger";
 
 const MODEL = "Xenova/all-MiniLM-L6-v2";
@@ -15,6 +15,9 @@ async function getPipe(): Promise<FeatureExtractionPipeline> {
   // permanently returning the cached rejected promise.
   _loading = (async () => {
     try {
+      // Lazy-load transformers so the OpenAI path (prod default) never bundles
+      // the ONNX runtime — it would blow Vercel's 250MB serverless function cap.
+      const { pipeline } = await import("@huggingface/transformers");
       const p = (await pipeline("feature-extraction", MODEL, {
         cache_dir: process.env.TRANSFORMERS_CACHE,
       })) as FeatureExtractionPipeline;
