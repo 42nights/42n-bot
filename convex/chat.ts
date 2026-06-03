@@ -56,3 +56,16 @@ export const insertMessage = mutation({
     return await ctx.db.insert("chat_messages", args);
   },
 });
+
+export const deleteThread = mutation({
+  args: { thread_id: v.id("chat_threads") },
+  handler: async (ctx, { thread_id }) => {
+    const messages = await ctx.db
+      .query("chat_messages")
+      .withIndex("by_thread", (q) => q.eq("thread_id", thread_id))
+      .collect();
+    for (const m of messages) await ctx.db.delete(m._id);
+    await ctx.db.delete(thread_id);
+    return true;
+  },
+});
