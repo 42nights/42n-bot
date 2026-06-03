@@ -5,7 +5,6 @@ import { Newsreader } from "next/font/google";
 import { Toaster } from "sonner";
 import { Shell } from "@/components/Shell";
 import { CommandPalette } from "@/components/CommandPalette";
-import { PreviewBanner } from "@/components/PreviewBanner";
 import { tenant } from "@/lib/tenant";
 import "./globals.css";
 
@@ -17,9 +16,21 @@ const newsreader = Newsreader({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://otis-two.vercel.app"),
   title: `${tenant.displayName} — AI engineer at 42nights`,
-  description:
-    `${tenant.displayName} reads issues. Writes PRs. Asks before doing anything risky.`,
+  description: `${tenant.displayName} reads issues. Writes PRs. Asks before doing anything risky.`,
+  openGraph: {
+    title: `${tenant.displayName} — AI engineer at 42nights`,
+    description: `${tenant.displayName} reads issues. Writes PRs. Asks before doing anything risky.`,
+    url: "https://otis-two.vercel.app",
+    siteName: "42nights",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: `${tenant.displayName} — AI engineer at 42nights`,
+    description: `${tenant.displayName} reads issues. Writes PRs.`,
+  },
 };
 
 export default function RootLayout({
@@ -53,7 +64,6 @@ export default function RootLayout({
         <Shell>{children}</Shell>
         <Toaster position="top-right" theme="dark" />
         <CommandPalette />
-        <PreviewBanner />
       </body>
     </html>
   );
