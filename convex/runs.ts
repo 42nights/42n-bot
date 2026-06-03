@@ -29,9 +29,14 @@ export const list = query({
 });
 
 export const getById = query({
-  args: { id: v.id("runs") },
+  // Accept any string and normalize: v.id() throws a 500 on a malformed id,
+  // which would bypass the route's own 404 path. normalizeId returns null for
+  // bad ids so callers can return a clean 404.
+  args: { id: v.string() },
   handler: async (ctx, { id }) => {
-    return await ctx.db.get(id);
+    const docId = ctx.db.normalizeId("runs", id);
+    if (!docId) return null;
+    return await ctx.db.get(docId);
   },
 });
 

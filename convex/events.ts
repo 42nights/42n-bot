@@ -14,11 +14,13 @@ export const insertEvent = mutation({
 });
 
 export const listByRun = query({
-  args: { run_id: v.id("runs") },
+  args: { run_id: v.string() },
   handler: async (ctx, { run_id }) => {
+    const runId = ctx.db.normalizeId("runs", run_id);
+    if (!runId) return [];
     return await ctx.db
       .query("events")
-      .withIndex("by_run", (q) => q.eq("run_id", run_id))
+      .withIndex("by_run", (q) => q.eq("run_id", runId))
       .order("asc")
       .collect();
   },
@@ -40,13 +42,15 @@ export const listByRunSince = query({
 // For the SSE stream: fetch all events for a run, optionally after a given convex id.
 export const listByRunAfterCursor = query({
   args: {
-    run_id: v.id("runs"),
+    run_id: v.string(),
     after_created: v.optional(v.number()),
   },
   handler: async (ctx, { run_id, after_created }) => {
-    let q = ctx.db
+    const runId = ctx.db.normalizeId("runs", run_id);
+    if (!runId) return [];
+    const q = ctx.db
       .query("events")
-      .withIndex("by_run", (q2) => q2.eq("run_id", run_id))
+      .withIndex("by_run", (q2) => q2.eq("run_id", runId))
       .order("asc");
     const rows = await q.collect();
     if (after_created !== undefined) {

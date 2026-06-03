@@ -17,11 +17,13 @@ export const insert = mutation({
 });
 
 export const listByRun = query({
-  args: { run_id: v.id("runs") },
+  args: { run_id: v.string() },
   handler: async (ctx, { run_id }) => {
+    const runId = ctx.db.normalizeId("runs", run_id);
+    if (!runId) return [];
     return await ctx.db
       .query("phase_costs")
-      .withIndex("by_run_phase", (q) => q.eq("run_id", run_id))
+      .withIndex("by_run_phase", (q) => q.eq("run_id", runId))
       .order("asc")
       .collect();
   },
