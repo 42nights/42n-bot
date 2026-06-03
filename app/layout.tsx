@@ -5,6 +5,7 @@ import { Newsreader } from "next/font/google";
 import { Toaster } from "sonner";
 import { Shell } from "@/components/Shell";
 import { CommandPalette } from "@/components/CommandPalette";
+import { PreviewBanner } from "@/components/PreviewBanner";
 import { tenant } from "@/lib/tenant";
 import "./globals.css";
 
@@ -52,6 +53,7 @@ export default function RootLayout({
         <Shell>{children}</Shell>
         <Toaster position="top-right" theme="dark" />
         <CommandPalette />
+        <PreviewBanner />
       </body>
     </html>
   );
