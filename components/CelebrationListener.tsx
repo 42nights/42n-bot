@@ -15,9 +15,9 @@ import {
 export function CelebrationListener({
   events,
 }: {
-  events: Array<{ id: number; kind: string; payload_json: string }>;
+  events: Array<{ id: string; kind: string; payload_json: string }>;
 }) {
-  const seen = useRef<Set<number>>(new Set());
+  const seen = useRef<Set<string>>(new Set());
   useEffect(() => {
     for (const e of events) {
       if (seen.current.has(e.id)) continue;

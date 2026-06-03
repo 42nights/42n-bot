@@ -14,6 +14,7 @@ export async function GET(
   return NextResponse.json({
     messages: rows.map((r) => ({
       ...r,
+      id: r._id,
       citations: r.citations_json ? JSON.parse(r.citations_json) : [],
     })),
   });

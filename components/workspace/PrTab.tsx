@@ -6,7 +6,7 @@ import { DiffTab } from "./DiffTab";
 import { cn } from "@/lib/utils";
 
 type Run = {
-  id: number;
+  id: string;
   type: "implement" | "review" | "system";
   pr_url: string | null;
   pr_number: number | null;
@@ -18,7 +18,7 @@ type Run = {
 };
 
 type Verdict = {
-  id: number;
+  id: string;
   attempt: number;
   pass: number;
   failure_summary: string | null;

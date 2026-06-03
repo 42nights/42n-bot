@@ -17,40 +17,40 @@ export const fetcher = async (url: string) => {
   return jsonOrThrow<any>(r);
 };
 
-export async function cancelRun(id: number) {
+export async function cancelRun(id: string) {
   const r = await fetch(`/api/runs/${id}/cancel`, { method: "POST" });
   return jsonOrThrow(r);
 }
 
-export async function sendChat(threadId: number | null, message: string) {
+export async function sendChat(threadId: string | null, message: string) {
   const r = await fetch(`/api/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ threadId, message }),
   });
   return jsonOrThrow<{
-    threadId: number;
+    threadId: string;
     answer: string;
-    citations: Array<{ runId: number; title: string; snippet: string }>;
+    citations: Array<{ runId: string; title: string; snippet: string }>;
   }>(r);
 }
 
 export async function listThreads() {
-  return (await fetcher("/api/chat/threads")) as { threads: Array<{ id: number; title: string; updated_at: number }> };
+  return (await fetcher("/api/chat/threads")) as { threads: Array<{ id: string; title: string; updated_at: number }> };
 }
 
 export async function createThread() {
   const r = await fetch(`/api/chat/threads`, { method: "POST" });
-  return jsonOrThrow<{ threadId: number }>(r);
+  return jsonOrThrow<{ threadId: string }>(r);
 }
 
-export async function getMessages(threadId: number) {
+export async function getMessages(threadId: string) {
   return (await fetcher(`/api/chat/threads/${threadId}/messages`)) as {
     messages: Array<{
-      id: number;
+      id: string;
       role: "user" | "assistant";
       content: string;
-      citations: Array<{ runId: number; title: string; snippet: string }>;
+      citations: Array<{ runId: string; title: string; snippet: string }>;
       created_at: number;
     }>;
   };

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listRuns, rollup24h } from "@/src/db/ops/runs";
+import { withIds } from "@/src/db/serialize";
 
 export const runtime = "nodejs";
 
@@ -15,5 +16,5 @@ export async function GET(req: NextRequest) {
     rollup24h(repo),
   ]);
 
-  return NextResponse.json({ runs, today });
+  return NextResponse.json({ runs: withIds(runs), today });
 }

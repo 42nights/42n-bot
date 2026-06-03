@@ -21,7 +21,7 @@ import type { EventRow } from "@/lib/narration";
 const spring = { type: "spring" as const, stiffness: 320, damping: 36, mass: 0.8 };
 
 type Run = {
-  id: number;
+  id: string;
   type: "implement" | "review" | "system";
   repo: string;
   issue_number: number | null;
@@ -39,7 +39,7 @@ type Run = {
 };
 
 type Verdict = {
-  id: number;
+  id: string;
   attempt: number;
   pass: number;
   failure_summary: string | null;

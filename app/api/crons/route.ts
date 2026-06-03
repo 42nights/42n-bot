@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createCron, listCrons, type CronAction } from "@/src/cron/store";
+import { withId, withIds } from "@/src/db/serialize";
 
 export const runtime = "nodejs";
 
 export async function GET() {
-  return NextResponse.json({ crons: await listCrons() });
+  return NextResponse.json({ crons: withIds(await listCrons()) });
 }
 
 const ACTIONS: CronAction[] = ["reviewer", "fix_issue", "send_otis"];
@@ -39,7 +40,7 @@ export async function POST(req: NextRequest) {
       repo: body.repo ?? null,
       enabled: body.enabled !== false,
     });
-    return NextResponse.json({ ok: true, cron });
+    return NextResponse.json({ ok: true, cron: withId(cron) });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: message }, { status: 400 });

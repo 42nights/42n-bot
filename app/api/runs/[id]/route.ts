@@ -3,6 +3,7 @@ import { getRun } from "@/src/db/ops/runs";
 import { listEventsByRun } from "@/src/db/ops/events";
 import { listVerdictsByRun } from "@/src/db/ops/verdicts";
 import { listArtifactsByRun } from "@/src/db/ops/artifacts";
+import { withId, withIds } from "@/src/db/serialize";
 
 export const runtime = "nodejs";
 
@@ -24,11 +25,16 @@ export async function GET(
 
   // Expose byte size instead of full content (same as before).
   const artifacts = rawArtifacts.map((a) => ({
-    _id: a._id,
+    id: a._id,
     kind: a.kind,
     bytes: a.content.length,
     created_at: a.created_at,
   }));
 
-  return NextResponse.json({ run, events, verdicts, artifacts });
+  return NextResponse.json({
+    run: withId(run),
+    events: withIds(events),
+    verdicts: withIds(verdicts),
+    artifacts,
+  });
 }

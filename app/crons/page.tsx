@@ -25,7 +25,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 type CronAction = "reviewer" | "fix_issue" | "send_otis";
 
 type CronRow = {
-  id: number;
+  id: string;
   name: string;
   schedule: string;
   action: CronAction;
@@ -39,17 +39,17 @@ type CronRow = {
 };
 
 type CronRunRow = {
-  id: number;
-  cron_id: number;
+  id: string;
+  cron_id: string;
   started_at: number;
   finished_at: number | null;
   ok: number;
   message: string | null;
-  run_id: number | null;
+  run_id: string | null;
 };
 
 type Repo = {
-  id: number;
+  id: string;
   owner: string;
   name: string;
   enabled: number;

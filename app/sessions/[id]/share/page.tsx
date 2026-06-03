@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 import type { EventRow } from "@/lib/narration";
 
 type Run = {
-  id: number;
+  id: string;
   type: "implement" | "review" | "system";
   repo: string;
   issue_number: number | null;
@@ -31,7 +31,7 @@ type Run = {
 };
 
 type Verdict = {
-  id: number;
+  id: string;
   attempt: number;
   pass: number;
   failure_summary: string | null;

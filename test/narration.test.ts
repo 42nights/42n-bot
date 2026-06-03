@@ -14,7 +14,7 @@ const ctx: TranslateContext = {
   runType: "implement",
 };
 
-function ev(kind: string, payload: unknown, id = 1, ts = 1000): EventRow {
+function ev(kind: string, payload: unknown, id = "1", ts = 1000): EventRow {
   return { id, ts, kind, payload_json: JSON.stringify(payload) };
 }
 
@@ -105,7 +105,7 @@ describe("translate", () => {
 
   it("survives malformed payload json", () => {
     const bad: EventRow = {
-      id: 1,
+      id: "1",
       ts: 1,
       kind: "implement.tool_use",
       payload_json: "{not valid json",
@@ -126,29 +126,29 @@ describe("translate", () => {
 describe("coalesceNarration", () => {
   it("collapses identical adjacent agent lines within 8s", () => {
     const lines = [
-      { kind: "agent" as const, text: "Editing `a.ts`.", id: 1, ts: 1000 },
-      { kind: "agent" as const, text: "Editing `a.ts`.", id: 2, ts: 3000 },
-      { kind: "agent" as const, text: "Editing `a.ts`.", id: 3, ts: 5000 },
+      { kind: "agent" as const, text: "Editing `a.ts`.", id: "1", ts: 1000 },
+      { kind: "agent" as const, text: "Editing `a.ts`.", id: "2", ts: 3000 },
+      { kind: "agent" as const, text: "Editing `a.ts`.", id: "3", ts: 5000 },
     ];
     const out = coalesceNarration(lines);
     expect(out).toHaveLength(1);
     // Keeps the latest timestamp/id.
     expect(out[0].ts).toBe(5000);
-    expect(out[0].id).toBe(3);
+    expect(out[0].id).toBe("3");
   });
 
   it("does NOT collapse identical lines more than 8s apart", () => {
     const lines = [
-      { kind: "agent" as const, text: "Editing `a.ts`.", id: 1, ts: 1000 },
-      { kind: "agent" as const, text: "Editing `a.ts`.", id: 2, ts: 20000 },
+      { kind: "agent" as const, text: "Editing `a.ts`.", id: "1", ts: 1000 },
+      { kind: "agent" as const, text: "Editing `a.ts`.", id: "2", ts: 20000 },
     ];
     expect(coalesceNarration(lines)).toHaveLength(2);
   });
 
   it("does NOT collapse different texts", () => {
     const lines = [
-      { kind: "agent" as const, text: "Editing `a.ts`.", id: 1, ts: 1000 },
-      { kind: "agent" as const, text: "Editing `b.ts`.", id: 2, ts: 2000 },
+      { kind: "agent" as const, text: "Editing `a.ts`.", id: "1", ts: 1000 },
+      { kind: "agent" as const, text: "Editing `b.ts`.", id: "2", ts: 2000 },
     ];
     expect(coalesceNarration(lines)).toHaveLength(2);
   });

@@ -14,7 +14,7 @@ const MonacoEditor = dynamic(
 );
 
 type Event = {
-  id: number;
+  id: string;
   ts: number;
   kind: string;
   payload_json: string;
@@ -73,7 +73,7 @@ function EmptyState({ message }: { message: string }) {
   );
 }
 
-export function CodeTab({ runId, events }: { runId: number; events: Event[] }) {
+export function CodeTab({ runId, events }: { runId: string; events: Event[] }) {
   const latest = useMemo(() => extractLatestFile(events), [events]);
   const prevPath = useRef<string | null>(null);
   const [visible, setVisible] = useState(true);

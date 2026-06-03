@@ -6,6 +6,7 @@ import {
   updateCron,
   type CronAction,
 } from "@/src/cron/store";
+import { withId, withIds } from "@/src/db/serialize";
 
 export const runtime = "nodejs";
 
@@ -17,8 +18,8 @@ export async function GET(
   const cron = await getCron(id);
   if (!cron) return NextResponse.json({ error: "not found" }, { status: 404 });
   return NextResponse.json({
-    cron,
-    history: await listCronRuns(cron._id, 50),
+    cron: withId(cron),
+    history: withIds(await listCronRuns(cron._id, 50)),
   });
 }
 
@@ -39,7 +40,7 @@ export async function PATCH(
     const updated = await updateCron(id, body);
     if (!updated)
       return NextResponse.json({ error: "not found" }, { status: 404 });
-    return NextResponse.json({ ok: true, cron: updated });
+    return NextResponse.json({ ok: true, cron: withId(updated) });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: message }, { status: 400 });

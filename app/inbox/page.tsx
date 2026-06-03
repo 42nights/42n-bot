@@ -47,7 +47,7 @@ type Issue = {
   source: "bot-found" | "bot-please" | "both";
   severity: "low" | "medium" | "high" | null;
   type: string | null;
-  run_id: number | null;
+  run_id: string | null;
   run_status: string | null;
   pr_number: number | null;
   pr_url: string | null;
@@ -55,12 +55,12 @@ type Issue = {
 
 type IssuesResponse = { issues: Issue[]; repos: number };
 
-type Thread = { id: number; title: string; updated_at: number };
+type Thread = { id: string; title: string; updated_at: number };
 type Message = {
-  id: number;
+  id: string;
   role: "user" | "assistant";
   content: string;
-  citations: Array<{ runId: number; title: string; snippet: string }>;
+  citations: Array<{ runId: string; title: string; snippet: string }>;
   created_at: number;
 };
 
@@ -578,7 +578,7 @@ function isDone(i: Issue): boolean {
 
 function ConversationTab() {
   const [threads, setThreads] = useState<Thread[]>([]);
-  const [activeThreadId, setActiveThreadId] = useState<number | null>(null);
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -616,7 +616,7 @@ function ConversationTab() {
     if (!trimmed || sending) return;
     setSending(true);
     const optimistic: Message = {
-      id: Date.now(),
+      id: `tmp-${Date.now()}`,
       role: "user",
       content: trimmed,
       citations: [],
@@ -634,7 +634,7 @@ function ConversationTab() {
           .catch(() => {});
       }
       const reply: Message = {
-        id: Date.now() + 1,
+        id: `tmp-${Date.now() + 1}`,
         role: "assistant",
         content: result.answer,
         citations: result.citations,

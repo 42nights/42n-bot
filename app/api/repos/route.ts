@@ -7,12 +7,13 @@ import {
 import { ensureLocalClone } from "@/src/repo-clone";
 import { embeddingsBackend } from "@/src/embeddings";
 import { log } from "@/src/shared/logger";
+import { withId, withIds } from "@/src/db/serialize";
 
 export const runtime = "nodejs";
 
 export async function GET() {
   return NextResponse.json({
-    connected: await listConnectedRepos(),
+    connected: withIds(await listConnectedRepos()),
     labels: botConfig.labels,
     verification: {
       maxIterations: botConfig.verification.maxIterations,
@@ -56,7 +57,7 @@ export async function POST(req: NextRequest) {
         log.warn("clone", `bg clone of repo ${repo._id} failed: ${err}`),
       );
     }
-    return NextResponse.json({ ok: true, repo });
+    return NextResponse.json({ ok: true, repo: withId(repo) });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const status = (err as { status?: number }).status ?? 400;

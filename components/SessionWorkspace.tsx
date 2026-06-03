@@ -19,7 +19,7 @@ import { TerminalTab } from "./workspace/TerminalTab";
 import { PrTab } from "./workspace/PrTab";
 
 type Run = {
-  id: number;
+  id: string;
   type: "implement" | "review" | "system";
   pr_url: string | null;
   pr_number: number | null;
@@ -31,14 +31,14 @@ type Run = {
 };
 
 type Event = {
-  id: number;
+  id: string;
   ts: number;
   kind: string;
   payload_json: string;
 };
 
 type Verdict = {
-  id: number;
+  id: string;
   attempt: number;
   pass: number;
   failure_summary: string | null;
@@ -46,7 +46,7 @@ type Verdict = {
 };
 
 type Artifact = {
-  id: number;
+  id: string;
   kind: string;
   bytes?: number;
   created_at?: number;

@@ -38,7 +38,7 @@ import {
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type ConnectedRepo = {
-  id: number;
+  id: string;
   owner: string;
   name: string;
   default_branch: string;
@@ -106,10 +106,10 @@ function SettingsContent() {
   const [name, setName] = useState("");
   const [repoDir, setRepoDir] = useState("");
   const [adding, setAdding] = useState(false);
-  const [reviewing, setReviewing] = useState<number | null>(null);
-  const [cloning, setCloning] = useState<number | null>(null);
-  const [toggling, setToggling] = useState<number | null>(null);
-  const [confirmRemove, setConfirmRemove] = useState<number | null>(null);
+  const [reviewing, setReviewing] = useState<string | null>(null);
+  const [cloning, setCloning] = useState<string | null>(null);
+  const [toggling, setToggling] = useState<string | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
 
   // Theme
   const [dark, setDark] = useState(true);

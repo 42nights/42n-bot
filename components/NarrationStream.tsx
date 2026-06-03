@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils";
 
 const spring = { type: "spring" as const, stiffness: 320, damping: 36, mass: 0.8 };
 
-type TimedLine = NarrationLine & { id: number; ts: number };
+type TimedLine = NarrationLine & { id: string; ts: number };
 
 /**
  * The conversation pane. Translates raw events into Otis's narration in real
@@ -30,7 +30,7 @@ export function NarrationStream({
   ctx,
   live = true,
 }: {
-  runId: number;
+  runId: string;
   initialEvents: EventRow[];
   ctx: TranslateContext;
   live?: boolean;

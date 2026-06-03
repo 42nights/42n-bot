@@ -3,14 +3,14 @@
 import { useMemo } from "react";
 
 type Event = {
-  id: number;
+  id: string;
   ts: number;
   kind: string;
   payload_json: string;
 };
 
 type Artifact = {
-  id: number;
+  id: string;
   kind: string;
   bytes?: number;
   created_at?: number;

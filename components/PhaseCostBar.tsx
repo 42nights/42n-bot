@@ -37,7 +37,7 @@ function phaseColor(phase: string): string {
   return PHASE_COLOR[phase] ?? "var(--fg-subtle)";
 }
 
-export function PhaseCostBar({ runId }: { runId: number }) {
+export function PhaseCostBar({ runId }: { runId: string }) {
   const { data, error } = useSWR<PhasesResponse>(
     `/api/runs/${runId}/phases`,
     fetcher,

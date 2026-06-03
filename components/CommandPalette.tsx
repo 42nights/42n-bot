@@ -31,7 +31,7 @@ type Issue = {
   title: string;
   repo: string;
   source: "bot-found" | "bot-please" | "both";
-  run_id: number | null;
+  run_id: string | null;
   run_status: string | null;
 };
 

@@ -10,7 +10,7 @@ import { ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Verdict = {
-  id: number;
+  id: string;
   attempt: number;
   pass: number;
   failure_summary: string | null;
@@ -265,7 +265,7 @@ export function DiffTab({
   verdicts,
   events,
 }: {
-  runId: number;
+  runId: string;
   prUrl: string | null;
   verdicts: Verdict[];
   events: Array<{ kind: string; payload_json: string }>;

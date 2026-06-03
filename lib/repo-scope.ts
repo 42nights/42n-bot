@@ -6,7 +6,7 @@ import { useCallback, useMemo } from "react";
 import { fetcher } from "./api-client";
 
 export type ConnectedRepoBrief = {
-  id: number;
+  id: string;
   owner: string;
   name: string;
   enabled: number;

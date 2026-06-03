@@ -27,7 +27,7 @@ export type TranslateContext = {
 };
 
 export type EventRow = {
-  id: number;
+  id: string;
   ts: number;
   kind: string;
   payload_json: string;
@@ -301,8 +301,8 @@ export function translate(
  * lines that touch the same file within 8 seconds. Returns a new list.
  */
 export function coalesceNarration(
-  lines: Array<NarrationLine & { id: number; ts: number }>,
-): Array<NarrationLine & { id: number; ts: number }> {
+  lines: Array<NarrationLine & { id: string; ts: number }>,
+): Array<NarrationLine & { id: string; ts: number }> {
   const out: typeof lines = [];
   for (const cur of lines) {
     const prev = out[out.length - 1];

@@ -24,7 +24,7 @@ type Plan = {
 };
 
 type Event = {
-  id: number;
+  id: string;
   ts: number;
   kind: string;
   payload_json: string;

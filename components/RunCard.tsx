@@ -6,7 +6,7 @@ import { cn, formatRelative, formatUsd, formatDuration, statusColor } from "@/li
 import { GitBranch, GitPullRequest, AlertTriangle, CheckCircle2, XCircle, CircleDot, Pause, Bot } from "lucide-react";
 
 export type RunSummary = {
-  id: number;
+  id: string;
   type: "implement" | "review" | "system";
   repo: string;
   issue_number: number | null;

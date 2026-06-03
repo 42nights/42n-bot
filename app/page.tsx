@@ -85,7 +85,7 @@ function Sparkline({ runs }: { runs: RunSummary[] }) {
   );
 }
 
-function useLatestNarration(runId: number | null, run: RunSummary | null) {
+function useLatestNarration(runId: string | null, run: RunSummary | null) {
   const { data } = useSWR<{
     run: RunSummary;
     events: EventRow[];
