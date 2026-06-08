@@ -3,13 +3,47 @@ import { v } from "convex/values";
 
 const SINGLETON_KEY = "1";
 
+/**
+ * Convex public queries are callable by anyone holding the deployment URL.
+ * The app_credentials row holds the GitHub App RSA private key, OAuth client
+ * secret, and webhook secret — none of which may ever leave the deployment to
+ * an unauthenticated caller. `get` is therefore split:
+ *
+ *  - secret fields (private_key_b64, client_secret, webhook_secret) are only
+ *    returned when the caller presents the shared server token that matches the
+ *    Convex-side `OTIS_SERVER_SECRET` env var. The Next server holds this token;
+ *    a browser does not.
+ *  - non-secret fields (app_id, slug, client_id) always return so the install
+ *    UI and `appConfigured()`/`dbAppSlug()` keep working.
+ *
+ * Fail-closed: if `OTIS_SERVER_SECRET` is not set on the deployment, or the
+ * presented token doesn't match, the secret fields are stripped. The server
+ * then falls back to its own env-var credentials.
+ */
+function serverTokenOk(token: string | undefined): boolean {
+  const expected = process.env.OTIS_SERVER_SECRET;
+  if (!expected || !token) return false;
+  if (token.length !== expected.length) return false;
+  // Convex's V8 runtime has no node:crypto; constant-time compare by hand.
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) {
+    diff |= token.charCodeAt(i) ^ expected.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
 export const get = query({
-  args: {},
-  handler: async (ctx) => {
-    return await ctx.db
+  args: { serverToken: v.optional(v.string()) },
+  handler: async (ctx, { serverToken }) => {
+    const row = await ctx.db
       .query("app_credentials")
       .withIndex("by_singleton", (q) => q.eq("singleton_key", SINGLETON_KEY))
       .unique();
+    if (!row) return null;
+    if (serverTokenOk(serverToken)) return row;
+    // Strip every secret field for unauthenticated/browser callers.
+    const { private_key_b64: _pk, client_secret: _cs, webhook_secret: _ws, ...safe } = row;
+    return safe;
   },
 });
 

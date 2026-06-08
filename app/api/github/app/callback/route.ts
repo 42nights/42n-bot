@@ -15,19 +15,19 @@ export async function GET(req: NextRequest) {
   const installationIdRaw = url.searchParams.get("installation_id");
   if (!installationIdRaw) {
     return NextResponse.redirect(
-      new URL("/repos?install=missing-installation-id", req.url),
+      new URL("/settings?install=missing-installation-id#repos", req.url),
     );
   }
   const installationId = Number(installationIdRaw);
   if (!Number.isFinite(installationId)) {
     return NextResponse.redirect(
-      new URL("/repos?install=bad-installation-id", req.url),
+      new URL("/settings?install=bad-installation-id#repos", req.url),
     );
   }
 
   if (!await appConfigured()) {
     return NextResponse.redirect(
-      new URL("/repos?install=app-not-configured", req.url),
+      new URL("/settings?install=app-not-configured#repos", req.url),
     );
   }
 
@@ -58,14 +58,14 @@ export async function GET(req: NextRequest) {
     );
 
     return NextResponse.redirect(
-      new URL(`/repos?install=ok&count=${added}`, req.url),
+      new URL(`/settings?install=ok&count=${added}#repos`, req.url),
     );
   } catch (err) {
     log.error("gh-app", `install callback failed: ${err}`);
     const msg = err instanceof Error ? err.message : String(err);
     return NextResponse.redirect(
       new URL(
-        `/repos?install=error&msg=${encodeURIComponent(msg.slice(0, 200))}`,
+        `/settings?install=error&msg=${encodeURIComponent(msg.slice(0, 200))}#repos`,
         req.url,
       ),
     );

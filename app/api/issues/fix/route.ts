@@ -3,6 +3,7 @@ import { ensureSchema } from "@/src/db/migrate";
 import { addLabel } from "@/src/github/client";
 import { botConfig } from "@/bot.config";
 import { requestDispatch } from "@/src/coordinator/dispatch";
+import { requireAdmin } from "@/src/shared/auth";
 import { log } from "@/src/shared/logger";
 
 export const runtime = "nodejs";
@@ -16,6 +17,8 @@ export const runtime = "nodejs";
  * a run row here — the coordinator owns that lifecycle.
  */
 export async function POST(req: NextRequest) {
+  const denied = requireAdmin(req);
+  if (denied) return denied;
   ensureSchema();
   const body = (await req.json().catch(() => ({}))) as {
     owner?: string;

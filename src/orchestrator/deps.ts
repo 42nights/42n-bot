@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { execa } from "execa";
 import { log } from "../shared/logger";
+import { installSpawnEnv } from "../shared/spawn-env";
 
 /**
  * Worktree dependency provisioning.
@@ -20,10 +21,12 @@ import { log } from "../shared/logger";
  * for the dominant case (bug fixes / features that don't touch package.json),
  * which is what the acceptance gate needs to run.
  *
- * Trust boundary: `npm ci` runs the repo's postinstall scripts. That's already
- * inside the bot's trust model — it runs the repo's tests and dev server — and
- * native modules (better-sqlite3, esbuild) need those scripts, so we do NOT
- * pass --ignore-scripts. Only connect repos you trust.
+ * Trust boundary: the cloned repo is attacker-controllable, so we install with
+ * `--ignore-scripts` — a malicious `postinstall` would otherwise be arbitrary
+ * RCE on the host. We also spawn with a minimal allowlisted env (see
+ * installSpawnEnv) so no host secret (GITHUB_TOKEN, Convex/Anthropic keys)
+ * reaches the install. Native modules that genuinely need build scripts
+ * (better-sqlite3, esbuild) should be provisioned in the sandbox, not the host.
  */
 
 type PkgManager = {
@@ -45,18 +48,20 @@ async function exists(p: string): Promise<boolean> {
 async function detectPkgManager(repoDir: string): Promise<PkgManager | null> {
   if (!(await exists(path.join(repoDir, "package.json")))) return null;
 
+  // Every install runs with --ignore-scripts: the clone is untrusted, so its
+  // lifecycle scripts (postinstall, etc.) must never execute on the host.
   if (await exists(path.join(repoDir, "pnpm-lock.yaml"))) {
     return {
       name: "pnpm",
-      install: ["pnpm", "install"],
-      ci: ["pnpm", "install", "--frozen-lockfile"],
+      install: ["pnpm", "install", "--ignore-scripts"],
+      ci: ["pnpm", "install", "--frozen-lockfile", "--ignore-scripts"],
     };
   }
   if (await exists(path.join(repoDir, "yarn.lock"))) {
     return {
       name: "yarn",
-      install: ["yarn", "install"],
-      ci: ["yarn", "install", "--frozen-lockfile"],
+      install: ["yarn", "install", "--ignore-scripts"],
+      ci: ["yarn", "install", "--frozen-lockfile", "--ignore-scripts"],
     };
   }
   if (
@@ -65,8 +70,8 @@ async function detectPkgManager(repoDir: string): Promise<PkgManager | null> {
   ) {
     return {
       name: "bun",
-      install: ["bun", "install"],
-      ci: ["bun", "install", "--frozen-lockfile"],
+      install: ["bun", "install", "--ignore-scripts"],
+      ci: ["bun", "install", "--frozen-lockfile", "--ignore-scripts"],
     };
   }
   const hasLock =
@@ -74,8 +79,10 @@ async function detectPkgManager(repoDir: string): Promise<PkgManager | null> {
     (await exists(path.join(repoDir, "npm-shrinkwrap.json")));
   return {
     name: "npm",
-    install: ["npm", "install", "--no-audit", "--no-fund"],
-    ci: hasLock ? ["npm", "ci", "--no-audit", "--no-fund"] : null,
+    install: ["npm", "install", "--no-audit", "--no-fund", "--ignore-scripts"],
+    ci: hasLock
+      ? ["npm", "ci", "--no-audit", "--no-fund", "--ignore-scripts"]
+      : null,
   };
 }
 
@@ -132,7 +139,9 @@ async function runInstall(repoDir: string, cmd: string[]): Promise<void> {
     cwd: repoDir,
     timeout: 300_000,
     maxBuffer: 50 * 1024 * 1024,
-    env: { ...process.env, CI: "1", npm_config_fund: "false" },
+    // Minimal allowlisted env — never hand the host's secrets to an untrusted
+    // repo's install.
+    env: installSpawnEnv(),
     stdio: "ignore",
   });
 }

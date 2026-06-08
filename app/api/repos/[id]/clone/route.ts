@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ensureLocalClone } from "@/src/repo-clone";
+import { requireAdmin } from "@/src/shared/auth";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 export async function POST(
-  _req: NextRequest,
+  req: NextRequest,
   ctx: { params: Promise<{ id: string }> },
 ) {
+  const denied = requireAdmin(req);
+  if (denied) return denied;
   const { id } = await ctx.params;
   // ensureLocalClone throws on serverless (no git binary / writable FS) rather
   // than returning {ok:false}; catch it so the client gets a clean error body

@@ -4,6 +4,7 @@ import {
   getConnectedRepo,
   updateConnectedRepo,
 } from "@/src/repo-store";
+import { requireAdmin } from "@/src/shared/auth";
 
 export const runtime = "nodejs";
 
@@ -11,6 +12,8 @@ export async function PATCH(
   req: NextRequest,
   ctx: { params: Promise<{ id: string }> },
 ) {
+  const denied = requireAdmin(req);
+  if (denied) return denied;
   const { id } = await ctx.params;
   if (!id) return NextResponse.json({ error: "bad id" }, { status: 400 });
   const body = (await req.json().catch(() => ({}))) as {
@@ -26,9 +29,11 @@ export async function PATCH(
 }
 
 export async function DELETE(
-  _req: NextRequest,
+  req: NextRequest,
   ctx: { params: Promise<{ id: string }> },
 ) {
+  const denied = requireAdmin(req);
+  if (denied) return denied;
   const { id } = await ctx.params;
   if (!id) return NextResponse.json({ error: "bad id" }, { status: 400 });
   const ok = await deleteConnectedRepo(id);

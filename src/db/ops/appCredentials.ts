@@ -12,7 +12,12 @@ export type AppCredRow = {
 };
 
 export async function getAppCreds(): Promise<AppCredRow | null> {
-  const row = await convex.query(api.appCredentials.get, {});
+  // Present the shared server token so Convex returns the secret fields
+  // (private_key_b64, client_secret, webhook_secret). Browser callers, which
+  // lack this token, get those fields stripped — see convex/appCredentials.ts.
+  const row = await convex.query(api.appCredentials.get, {
+    serverToken: process.env.OTIS_SERVER_SECRET,
+  });
   return (row as AppCredRow | null) ?? null;
 }
 

@@ -54,7 +54,10 @@ export async function readAppCreds(): Promise<AppCreds | null> {
 async function readAppCredsFromDb(): Promise<AppCreds | null> {
   try {
     const row = await getAppCreds();
-    if (!row) return null;
+    // `private_key_b64` is absent when Convex stripped the secret fields because
+    // OTIS_SERVER_SECRET wasn't presented/configured. Treat that as "no DB
+    // creds" and fall back to env vars rather than constructing a broken App.
+    if (!row?.private_key_b64) return null;
     return {
       appId: row.app_id,
       privateKey: Buffer.from(row.private_key_b64, "base64").toString("utf8"),

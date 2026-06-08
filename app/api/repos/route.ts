@@ -6,6 +6,7 @@ import {
 } from "@/src/repo-store";
 import { ensureLocalClone } from "@/src/repo-clone";
 import { embeddingsBackend } from "@/src/embeddings";
+import { requireAdmin } from "@/src/shared/auth";
 import { log } from "@/src/shared/logger";
 import { withId, withIds } from "@/src/db/serialize";
 
@@ -29,6 +30,8 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  const denied = requireAdmin(req);
+  if (denied) return denied;
   if (!process.env.GITHUB_TOKEN) {
     return NextResponse.json(
       { error: "GITHUB_TOKEN is not set on the server" },

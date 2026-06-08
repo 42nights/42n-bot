@@ -1,15 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getConnectedRepo } from "@/src/repo-store";
 import { runReviewer } from "@/src/coordinator/reviewer";
+import { requireAdmin } from "@/src/shared/auth";
 import { log } from "@/src/shared/logger";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 export async function POST(
-  _req: NextRequest,
+  req: NextRequest,
   ctx: { params: Promise<{ id: string }> },
 ) {
+  const denied = requireAdmin(req);
+  if (denied) return denied;
   const { id } = await ctx.params;
   const repo = await getConnectedRepo(id);
   if (!repo) {

@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runImplementer } from "@/src/coordinator/implementer";
 import { runReviewer } from "@/src/coordinator/reviewer";
+import { requireAdmin } from "@/src/shared/auth";
 import { botConfig } from "@/bot.config";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
+  const denied = requireAdmin(req);
+  if (denied) return denied;
   const body = (await req.json().catch(() => ({}))) as {
     kind?: "implementer" | "reviewer";
     owner?: string;

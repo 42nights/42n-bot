@@ -1,21 +1,7 @@
 import { execa } from "execa";
 import { botConfig } from "../../bot.config";
 import { log } from "../shared/logger";
-
-/**
- * The Claude CLI prefers `ANTHROPIC_API_KEY` over its cached OAuth token when
- * both are present. If the env has a stale/empty/placeholder key (very common
- * in shells that previously sourced one), the CLI bails with "Not logged in"
- * before it even tries OAuth. Strip the var so the CLI falls back to its
- * keychain login, unless the user explicitly opts back into API-key mode.
- */
-function spawnEnv(): NodeJS.ProcessEnv {
-  if (process.env.USE_ANTHROPIC_API_KEY === "1") return process.env;
-  const out = { ...process.env };
-  delete out.ANTHROPIC_API_KEY;
-  delete out.ANTHROPIC_AUTH_TOKEN;
-  return out;
-}
+import { claudeSpawnEnv } from "../shared/spawn-env";
 
 /**
  * One-shot, non-streaming Claude CLI call. Used for short structured prompts
@@ -56,7 +42,7 @@ export async function runClaudeHeadless(opts: {
       cwd: opts.cwd,
       timeout: opts.timeoutMs ?? botConfig.claudeCode.criticTimeoutMs,
       killSignal: "SIGKILL",
-      env: spawnEnv(),
+      env: claudeSpawnEnv(),
       encoding: "utf8",
       maxBuffer: 32 * 1024 * 1024,
     });

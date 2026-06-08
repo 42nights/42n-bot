@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createCron, listCrons, type CronAction } from "@/src/cron/store";
+import { requireAdmin } from "@/src/shared/auth";
 import { withId, withIds } from "@/src/db/serialize";
 
 export const runtime = "nodejs";
@@ -11,6 +12,8 @@ export async function GET() {
 const ACTIONS: CronAction[] = ["reviewer", "fix_issue", "send_otis"];
 
 export async function POST(req: NextRequest) {
+  const denied = requireAdmin(req);
+  if (denied) return denied;
   const body = (await req.json().catch(() => ({}))) as {
     name?: string;
     schedule?: string;

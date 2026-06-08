@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { addLabel, ghFor } from "@/src/github/client";
+import { ghFor } from "@/src/github/client";
 import { activeRepos } from "@/src/repo-store";
 import { botConfig } from "@/bot.config";
 import { requestDispatch } from "@/src/coordinator/dispatch";
+import { requireAdmin } from "@/src/shared/auth";
 import { log } from "@/src/shared/logger";
 
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
+  const denied = requireAdmin(req);
+  if (denied) return denied;
   const body = (await req.json().catch(() => ({}))) as {
     prompt?: string;
     repo?: string | null;

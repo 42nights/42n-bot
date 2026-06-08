@@ -6,7 +6,7 @@ import useSWR from "swr";
 import { toast } from "sonner";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
-import { fetcher } from "@/lib/api-client";
+import { fetcher, friendlyError } from "@/lib/api-client";
 import { translate, type EventRow, type TranslateContext } from "@/lib/narration";
 import { formatUsd } from "@/lib/utils";
 import { useRepoScope } from "@/lib/repo-scope";
@@ -177,7 +177,7 @@ function Home() {
       setPrompt("");
       router.push("/sessions");
     } catch (err) {
-      toast.error((err as Error).message);
+      toast.error(friendlyError(err, "Couldn't send that to Otis. Try again."));
     } finally {
       setSubmitting(false);
     }

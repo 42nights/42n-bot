@@ -54,15 +54,18 @@ function statusIcon(status: string) {
 }
 
 function useDarkMode() {
-  const [dark, setDark] = useState(true);
+  // Light by default. The pre-hydration script in app/layout.tsx already
+  // applied `.dark` for returning dark users before paint; sync from the live
+  // DOM class (and stored preference) on mount.
+  const [dark, setDark] = useState(false);
 
   useEffect(() => {
     const stored = localStorage.getItem("otis-theme");
-    if (stored) {
-      const isDark = stored === "dark";
-      setDark(isDark);
-      document.documentElement.classList.toggle("dark", isDark);
-    }
+    const isDark = stored
+      ? stored === "dark"
+      : document.documentElement.classList.contains("dark");
+    setDark(isDark);
+    document.documentElement.classList.toggle("dark", isDark);
   }, []);
 
   function toggle() {

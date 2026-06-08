@@ -7,7 +7,7 @@ import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { toast } from "sonner";
 import { motion, AnimatePresence } from "framer-motion";
-import { fetcher } from "@/lib/api-client";
+import { fetcher, friendlyError } from "@/lib/api-client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -111,18 +111,18 @@ function SettingsContent() {
   const [toggling, setToggling] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
 
-  // Theme
-  const [dark, setDark] = useState(true);
+  // Theme — light by default; sync from stored preference / live DOM class.
+  const [dark, setDark] = useState(false);
   // Notification sound toggle — UI only for now
   const [soundEnabled, setSoundEnabled] = useState(false);
 
   useEffect(() => {
     const stored = localStorage.getItem("otis-theme");
-    if (stored) {
-      const isDark = stored === "dark";
-      setDark(isDark);
-      document.documentElement.classList.toggle("dark", isDark);
-    }
+    const isDark = stored
+      ? stored === "dark"
+      : document.documentElement.classList.contains("dark");
+    setDark(isDark);
+    document.documentElement.classList.toggle("dark", isDark);
     const sound = localStorage.getItem("otis-sound");
     setSoundEnabled(sound === "on");
   }, []);
@@ -191,7 +191,7 @@ function SettingsContent() {
       setRepoDir("");
       mutate();
     } catch (err) {
-      toast.error((err as Error).message ?? "Failed to connect");
+      toast.error(friendlyError(err, "Couldn't connect that repo. Check the owner/name and your token."));
     } finally {
       setAdding(false);
     }
@@ -210,7 +210,7 @@ function SettingsContent() {
       toast.success(repo.enabled ? "Paused" : "Enabled");
       mutate();
     } catch (err) {
-      toast.error((err as Error).message);
+      toast.error(friendlyError(err, "Couldn't update that repo. Try again."));
     } finally {
       setToggling(null);
     }
@@ -230,7 +230,7 @@ function SettingsContent() {
       );
       mutate();
     } catch (err) {
-      toast.error((err as Error).message);
+      toast.error(friendlyError(err, "Clone failed. Check the repo and retry."));
     } finally {
       setCloning(null);
     }
@@ -240,12 +240,12 @@ function SettingsContent() {
     setReviewing(repo.id);
     try {
       if (!repo.repo_dir) {
-        toast.message("Cloning first…");
+        toast.message("Cloning the repo first — this only happens once…");
         await cloneRepo(repo);
         const fresh = await mutate();
         const updated = fresh?.connected.find((x) => x.id === repo.id);
         if (!updated?.repo_dir) {
-          toast.error("Clone failed; reviewer can't run.");
+          toast.error("Couldn't clone this repo, so the scan can't run. Hit “clone now”, then Find issues again.");
           return;
         }
         repo = updated;
@@ -259,7 +259,7 @@ function SettingsContent() {
       );
       mutate();
     } catch (err) {
-      toast.error((err as Error).message);
+      toast.error(friendlyError(err, "The scan couldn't run. Try again in a moment."));
     } finally {
       setReviewing(null);
     }
@@ -280,7 +280,7 @@ function SettingsContent() {
       toast.success("Removed");
       mutate();
     } catch (err) {
-      toast.error((err as Error).message);
+      toast.error(friendlyError(err, "Couldn't remove that repo. Try again."));
     }
   }
 
@@ -523,7 +523,7 @@ function SettingsContent() {
                 {dark ? "Dark mode" : "Light mode"}
               </div>
               <div className="text-xs text-[var(--fg-muted)] mt-0.5">
-                Default is dark. Stored in localStorage.
+                Default is light. Stored in localStorage.
               </div>
             </div>
             <button

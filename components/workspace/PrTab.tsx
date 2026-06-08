@@ -41,7 +41,10 @@ function CheckStrip({ verdicts }: { verdicts: Verdict[] }) {
   const latest = verdicts[verdicts.length - 1];
   let checks: Check[] = [];
   try {
-    checks = JSON.parse(latest.checks_json);
+    const parsed = JSON.parse(latest.checks_json);
+    // checks_json can hold a non-array shape (object/null) from older rows or a
+    // partial verdict; never let a non-array reach .map and crash the page.
+    if (Array.isArray(parsed)) checks = parsed;
   } catch {
     /* ignore */
   }
