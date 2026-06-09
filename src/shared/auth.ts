@@ -43,14 +43,19 @@ export function requireAdmin(req: NextRequest): NextResponse | null {
 }
 
 /**
- * A genuine same-origin/same-site fetch or navigation from the dashboard.
+ * A genuine same-origin fetch or navigation from the dashboard itself.
  * `Sec-Fetch-Site` is a forbidden header set by the browser — page scripts
  * (including a malicious cross-origin page) cannot override it, and non-browser
  * clients (curl, attacker scripts) don't send it at all.
+ *
+ * Only `same-origin` is accepted, NOT `same-site`: a sibling 42nights subdomain
+ * (e.g. another product on *.42nights.dev) is `same-site` but cross-origin, and
+ * must not be able to drive Otis's privileged routes from a browser. Legitimate
+ * server-to-server calls from other products use the `OTIS_ADMIN_SECRET` bearer
+ * (they send no Sec-Fetch-Site at all), so this costs no real integration.
  */
 function isFirstPartyBrowserRequest(req: NextRequest): boolean {
-  const site = req.headers.get("sec-fetch-site");
-  return site === "same-origin" || site === "same-site";
+  return req.headers.get("sec-fetch-site") === "same-origin";
 }
 
 function timingSafeEqualStr(a: string, b: string): boolean {
